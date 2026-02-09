@@ -39,11 +39,11 @@ def gen_secrets(groups: list[int]) -> bytes:
     # The secrets file will never be shared with attackers
 
     # Generate shared AES key
-    aes_256_shared = token_hex(32)
+    aes_128_shared = token_hex(16)
 
     secrets = {
         "groups": groups,
-        "aes_256_shared": aes_256_shared 
+        "aes_128_shared": aes_128_shared 
     }
 
     # NOTE: if you choose to use JSON for your file type, you will not
