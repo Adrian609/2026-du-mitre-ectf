@@ -1,0 +1,24 @@
+// A basic ARM Cortex-M0+ platoform with two UART
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    IRQ -> cpu@0
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m0+"
+    nvic: nvic
+
+
+flash: Memory.MappedMemory @ sysbus 0x00000000
+    size: 0x40000 // 256 KB
+
+sram: Memory.MappedMemory @ sysbus 0x20200000
+    size: 0x8000  // 32 KB
+
+
+uart0: UART.PL011 @ sysbus 0x40108000
+    IRQ -> nvic@15
+
+
+uart1: UART.PL011 @ sysbus 0x4010A000
+    IRQ -> nvic@16
+

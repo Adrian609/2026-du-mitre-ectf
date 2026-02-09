@@ -36,15 +36,19 @@ void generate_list_files(list_response_t *file_list) {
     // Loop through all files on the system
     for (uint8_t i = 0; i < MAX_FILE_COUNT; i++) {
         // Check if the file is in use
+
         if (is_slot_in_use(i)) {
+			
             read_file(i, &temp_file);
 
             file_list->metadata[file_list->n_files].slot = i;
             file_list->metadata[file_list->n_files].group_id = temp_file.group_id;
+			
             strcpy(file_list->metadata[file_list->n_files].name, (char *)&temp_file.name);
             file_list->n_files++;
         }
     }
+	
 }
 
 
@@ -62,6 +66,7 @@ void generate_list_files(list_response_t *file_list) {
 int list(uint16_t pkt_len, uint8_t *buf) {
     list_command_t *command = (list_command_t*)buf;
     list_response_t file_list;
+
 
     memset(&file_list, 0, sizeof(file_list));
 

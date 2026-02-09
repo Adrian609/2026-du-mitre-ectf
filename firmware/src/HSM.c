@@ -24,6 +24,8 @@
 #include "ti_msp_dl_config.h"
 #include "status_led.h"
 #include "simple_uart.h"
+#include "syscalls.h"
+#include "kernel.h"
 
 /* Code between this #ifdef and the subsequent #endif will
 *  be ignored by the compiler if CRYPTO_EXAMPLE is not set in
@@ -112,44 +114,45 @@ void crypto_example(void) {
 }
 #endif  //CRYPTO_EXAMPLE
 
+
 /**********************************************************
- ********************* CORE FUNCTIONS *********************
+ main() starts kernel which after init starts user loop
  **********************************************************/
 
-
-/** @brief Initializes peripherals for system boot.
-*/
-void init() {
-    // Initialize all of the hardware components
-    SYSCFG_DL_init();
-
-    init_fs();
+KERNEL_CODE int main(void) {
+	start_kernel();
+	return 0;
 }
 
-/**********************************************************
- *********************** MAIN LOOP ************************
- **********************************************************/
 
-int main(void) {
+int start_user_loop(void) {
     char output_buf[128] = {0};
     msg_type_t cmd;
     int result;
     uint16_t pkt_len;
 
-    // initialize the device
-    init();
 
-    // process commands forever
+	print_current_mode(); // TODO: remove
+	result = svc_print("Hello from user side\n");
+	
+	
+    // Process commands forever
     while (1) {
+		print_current_mode(); // TODO: remove
         print_debug("Ready\n");
 
-        STATUS_LED_ON();
+        #if ON_BOARD
+		STATUS_LED_ON();
+		#endif
 
         pkt_len = 0;
         result = read_packet(CONTROL_INTERFACE, &cmd, uart_buf, &pkt_len);
 
         if (result != MSG_OK) {
+			#if ON_BOARD
             STATUS_LED_OFF();
+			#endif
+
             switch (result)
             {
             case MSG_BAD_PTR:
@@ -174,56 +177,66 @@ int main(void) {
         // Handle list command
         case LIST_MSG:
 
-#ifdef CRYPTO_EXAMPLE
-            // Run the crypto example
-            // TODO: Remove this from your design
-            crypto_example();
-#endif // CRYPTO_EXAMPLE
-
             // Print the boot flag
             // TODO: Remove this from your design
             boot_flag();
 
+            #if ON_BOARD
             STATUS_LED_OFF();
+			#endif		
             list(pkt_len, uart_buf);
             break;
 
         // Handle read command
         case READ_MSG:
+            #if ON_BOARD
             STATUS_LED_OFF();
+			#endif
             read(pkt_len, uart_buf);
             break;
 
         // Handle write command
         case WRITE_MSG:
+            #if ON_BOARD
             STATUS_LED_OFF();
+			#endif
             write(pkt_len, uart_buf);
             break;
 
         // Handle receive command
         case RECEIVE_MSG:
+            #if ON_BOARD
             STATUS_LED_OFF();
+			#endif
             receive(pkt_len, uart_buf);
             break;
 
         // Handle interrogate command
         case INTERROGATE_MSG:
+            #if ON_BOARD
             STATUS_LED_OFF();
+			#endif
             interrogate(pkt_len, uart_buf);
             break;
 
         // Handle listen command
         case LISTEN_MSG:
+            #if ON_BOARD
             STATUS_LED_OFF();
+			#endif
             listen(pkt_len, uart_buf);
             break;
 
         // Handle bad command
         default:
+            #if ON_BOARD
             STATUS_LED_OFF();
+			#endif
             sprintf(output_buf, "Invalid Command: %c\n", cmd);
             print_error(output_buf);
             break;
         }
     }
 }
+
+

@@ -1,0 +1,46 @@
+using sysbus
+
+# Create a UART hub to act as a bridge
+emulation CreateUARTHub "uartHub"
+
+# Create the machine 0 (see single machine .resc for details_
+mach create "ectf-2026-b0"
+machine LoadPlatformDescription @mspm0l2228.repl
+sysbus LoadBinary @../build/hsm.bin 0x6000
+cpu PC `sysbus ReadDoubleWord 0x6004`
+cpu SP `sysbus ReadDoubleWord 0x6000`
+cpu VectorTableOffset 0x6000  
+sysbus WriteDoubleWord 0x4010802C 0x70
+sysbus WriteDoubleWord 0x4010A02C 0x70
+sysbus WriteDoubleWord 0x40108030 0x301
+sysbus WriteDoubleWord 0x4010A030 0x301
+emulation CreateUartPtyTerminal "pty00" "/tmp/hsm0_uart0" True
+connector Connect uart0 pty00
+connector Connect uart1 uartHub
+
+# Create the machine 1 (see single machine .resc for details_
+mach create "ectf-2026-b1"
+machine LoadPlatformDescription @mspm0l2228.repl
+sysbus LoadBinary @../build/hsm.bin 0x6000
+cpu PC `sysbus ReadDoubleWord 0x6004`
+cpu SP `sysbus ReadDoubleWord 0x6000`
+cpu VectorTableOffset 0x6000  
+sysbus WriteDoubleWord 0x4010802C 0x70
+sysbus WriteDoubleWord 0x4010A02C 0x70
+sysbus WriteDoubleWord 0x40108030 0x301
+sysbus WriteDoubleWord 0x4010A030 0x301
+emulation CreateUartPtyTerminal "pty10" "/tmp/hsm1_uart0" True
+connector Connect uart0 pty10
+connector Connect uart1 uartHub
+
+
+# Open the UART window to see output
+mach set "ectf-2026-b0"
+showAnalyzer sysbus.uart0
+showAnalyzer sysbus.uart1
+mach set "ectf-2026-b1"
+showAnalyzer sysbus.uart0
+
+
+# 6. Start the simulation
+start

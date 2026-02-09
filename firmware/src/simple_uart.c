@@ -13,6 +13,39 @@
 
 #include "simple_uart.h"
 
+// TODO: remove code in the preprocessor block
+#if !ON_BOARD
+
+// Standard PL011 Register Offsets
+#define PL011_DR 0x00  // Data Register
+#define PL011_FR 0x18  // Flag Register
+#define PL011_FR_TXFF (1 << 5) // Transmit FIFO Full
+#define PL011_FR_RXFE (1 << 4) // Receive FIFO Empty
+
+// We treat the handles as raw base addresses now
+uint32_t uart_bases[] = {0x40108000, 0x4010A000};
+
+static uint32_t get_uart_base(int uart_id) {
+    if (uart_id < 0 || uart_id >= 2) return uart_bases[0];
+    return uart_bases[uart_id];
+}
+
+int uart_readbyte(int uart_id) {
+    uint32_t base = get_uart_base(uart_id);
+    // Wait until Receive FIFO is NOT empty
+    while (*(volatile uint32_t *)(base + PL011_FR) & PL011_FR_RXFE);
+    return (int)(*(volatile uint32_t *)(base + PL011_DR) & 0xFF);
+}
+
+void uart_writebyte(int uart_id, uint8_t data) {
+    uint32_t base = get_uart_base(uart_id);
+    // Wait until Transmit FIFO is NOT full
+    while (*(volatile uint32_t *)(base + PL011_FR) & PL011_FR_TXFF);
+    *(volatile uint32_t *)(base + PL011_DR) = data;
+}
+
+#else
+
 /**********************************************************
  *************** HARDWARE ABSTRACTIONS ********************
  **********************************************************/
@@ -49,3 +82,4 @@ void uart_writebyte(int uart_id, uint8_t data) {
     DL_UART_transmitDataBlocking(get_uart_handle(uart_id), data);
 }
 
+#endif

@@ -115,6 +115,7 @@ int read_file(slot_t slot, file_t *dest) {
     if (flash_addr < 0 || file_size < 0) {
         return -1;
     }
+
     flash_simple_read(flash_addr, dest, file_size);
 
     return 0;

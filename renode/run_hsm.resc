@@ -1,0 +1,44 @@
+using sysbus
+
+# Create the machine
+mach create "ectf-2026"
+
+# Load the platform definition
+machine LoadPlatformDescription @mspm0l2228.repl
+
+# Load the binary into memory
+sysbus LoadBinary @../build/hsm.bin 0x6000
+
+# Set the Program Counter and Stack Pointer manually since no
+# bootloader; application is at 0x6000 onwards
+# (The first 4 bytes there is SP, the next 4 are PC)
+cpu PC `sysbus ReadDoubleWord 0x6004`
+cpu SP `sysbus ReadDoubleWord 0x6000`
+cpu VectorTableOffset 0x6000  
+
+# Set UART0 LCR_H (Base + 0x2C) to 0x70 (8-bit, FIFO enabled)
+sysbus WriteDoubleWord 0x4010802C 0x70
+
+# Set UART1 LCR_H (Base + 0x2C) to 0x70
+sysbus WriteDoubleWord 0x4010A02C 0x70
+
+# Enable UART0 (Base + 0x30 = 0x40108030)
+sysbus WriteDoubleWord 0x40108030 0x301
+
+# Enable UART1 (Base + 0x30 = 0x4010A030)
+sysbus WriteDoubleWord 0x4010A030 0x301
+
+# Open the UART window to see output
+showAnalyzer uart0
+#showAnalyzer uart1
+
+# Create the PTY backends
+emulation CreateUartPtyTerminal "pty0" "/tmp/hsm0_uart0" True
+#emulation CreateUartPtyTerminal "pty1" "/tmp/hsm0_uart1" True
+
+# Connect UART peripherals to these terminals
+connector Connect uart0 pty0
+#connector Connect uart1 pty1
+
+# 6. Start the simulation
+start

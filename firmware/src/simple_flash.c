@@ -12,6 +12,30 @@
  */
 
 #include "simple_flash.h"
+#include "host_messaging.h"
+
+// TODO: remove code in the preprocessor block
+#if !ON_BOARD 
+
+int flash_simple_erase_page(uint32_t address) {
+    // In Renode's default MappedMemory, 'erasing' is just writing 0xFF
+    // A standard page size is usually 1KB (0x400) 
+    memset((void *)address, 0xFF, FLASH_PAGE_SIZE); 
+    return 0;
+}
+
+void flash_simple_read(uint32_t address, void* buffer, uint32_t size) {
+    memcpy(buffer, (void *)address, size);
+}
+
+int flash_simple_write(uint32_t address, void* buffer, uint32_t size) {
+    // In Renode, you can write directly to the flash memory address
+    // just like RAM, unless you've specifically marked it as ReadOnly.
+    memcpy((void *)address, buffer, size);
+    return 0;
+}
+
+#else
 
 /**
  * @brief Flash Simple Erase Page
@@ -101,3 +125,5 @@ int flash_simple_write(uint32_t address, void* buffer, uint32_t size) {
     }
     return 0;
 }
+
+#endif

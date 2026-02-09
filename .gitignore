@@ -1,6 +1,7 @@
 # eCTF generated artifacts / secrets
 global.secrets
 build/
+firmware/inc/secrets.h
 *.bin
 *.elf
 

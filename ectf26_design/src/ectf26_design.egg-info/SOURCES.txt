@@ -1,5 +1,4 @@
 pyproject.toml
-src/__init__.py
 src/gen_secrets.py
 src/ectf26_design.egg-info/PKG-INFO
 src/ectf26_design.egg-info/SOURCES.txt

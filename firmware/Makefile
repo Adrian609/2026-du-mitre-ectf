@@ -7,11 +7,14 @@ LNK = "$(TICLANG_ARMCOMPILER)/bin/tiarmclang"
 OBJCOPY = "$(TICLANG_ARMCOMPILER)/bin/tiarmobjcopy"
 BUILDDIR ?= /tmp/build
 VPATH = "src"
-LINKERFILE = "firmware.ld"
+LINKERFILE = "firmware_ectf.ld"
 
 # to download wolfssl for the simple crypto example, `cd ./firmware/ && git clone https://github.com/wolfSSL/wolfssl`
 # then set this variable to 1
-CRYPTO_EXAMPLE = 0
+CRYPTO_EXAMPLE = 1
+
+# TODO: set to 1 when compiling for board
+ON_BOARD = 0
 
 OBJECTS = $(BUILDDIR)/HSM.so \
     $(BUILDDIR)/simple_uart.so \
@@ -21,7 +24,9 @@ OBJECTS = $(BUILDDIR)/HSM.so \
     $(BUILDDIR)/host_messaging.so \
     $(BUILDDIR)/security.so \
     $(BUILDDIR)/filesystem.so \
-    $(BUILDDIR)/commands.so
+    $(BUILDDIR)/commands.so \
+	$(BUILDDIR)/syscalls.so \
+	$(BUILDDIR)/kernel.so
 
 ifeq ($(CRYPTO_EXAMPLE), 1)
 OBJECTS += $(BUILDDIR)/simple_crypto.so
@@ -42,6 +47,7 @@ CFLAGS += -DNO_DEV_RANDOM
 CFLAGS += -DWC_NO_DEFAULT_DEVID
 CFLAGS += -DWOLF_CRYPTO_CB
 
+
 WOLFSSL_INC = wolfssl/wolfcrypt/src
 CFLAGS += -I./wolfssl
 
@@ -51,6 +57,8 @@ OBJECTS += $(WOLFSSL_INC)/md5.o $(WOLFSSL_INC)/cryptocb.o
 endif
 
 NAME = hsm
+
+CFLAGS += -DON_BOARD=$(ON_BOARD)
 
 CFLAGS += -I.. \
     -D__MSPM0L2228__ \
@@ -62,7 +70,7 @@ CFLAGS += -I.. \
     -mcpu=cortex-m0plus \
     -march=thumbv6m \
     -mfloat-abi=soft \
-    -mthumb
+    -mthumb 
 
 LFLAGS += "-l$(MSPM0_SDK_INSTALL_DIR)/source/ti/drivers/lib/ticlang/m0p/drivers_mspm0l122x_l222x.a" \
     "-l$(MSPM0_SDK_INSTALL_DIR)/kernel/nortos/lib/ticlang/m0p/nortos_mspm0l122x_l222x.a" \
@@ -74,7 +82,10 @@ LFLAGS += "-l$(MSPM0_SDK_INSTALL_DIR)/source/ti/drivers/lib/ticlang/m0p/drivers_
     -Wl,--rom_model \
     -Wl,--warn_sections \
     "-L$(TICLANG_ARMCOMPILER)/lib" \
-    -llibc.a
+    -llibc.a \
+	-Wl,--map_file=./link.map
+
+
 
 all: $(BUILDDIR)/$(NAME).elf $(BUILDDIR)/$(NAME).bin
 
@@ -97,7 +108,7 @@ $(BUILDDIR)/$(NAME).elf: $(OBJECTS)
 	@ $(LNK) -Wl,-u,_c_int00 $(OBJECTS)  $(LFLAGS) -o $(BUILDDIR)/$(NAME).elf
 
 $(BUILDDIR)/$(NAME).bin: $(BUILDDIR)/$(NAME).elf
-	@ $(OBJCOPY) -O binary $(BUILDDIR)/$(NAME).elf $(BUILDDIR)/$(NAME).bin
+	@ $(OBJCOPY) -O binary --gap-fill 0xff $(BUILDDIR)/$(NAME).elf $(BUILDDIR)/$(NAME).bin
 
 clean:
 	@ echo Cleaning...
