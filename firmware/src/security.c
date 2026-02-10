@@ -11,15 +11,55 @@
  * @copyright Copyright (c) 2026 The MITRE Corporation
  */
 #include "security.h"
+#include "secrets.h"
 #include "host_messaging.h"
+#define SALT_LEN 1
+#define ITERATIONS 1000
+#define DK_LEN 32
+
+/* Constant-time compare: returns 1 if equal, 0 otherwise */
+static int consttime_memcomp(const byte* a, const byte* b, int n)
+{
+    byte diff = 0;
+    for (int i = 0; i < n; i++) {
+        diff |= (byte)(a[i] ^ b[i]);
+    }
+    return diff == 0;
+}
+
 
 bool check_pin(unsigned char *pin) {
     print_debug("Checking PIN\n");
 
-    // TODO: the reference design doesn't implement *ANY* security.
-    // This function currently does nothing. Your team should add the
-    // appropriate security checks here to implement the security
-    // requirements.
+    if (pin == NULL) return false;
+
+
+    byte hash_buf[DK_LEN];
+
+    //TODO: Figure out how we will implement salt generation
+    static const byte pin_salt[SALT_LEN] = { 0x00 };
+
+    //wolfssl pbkdf2 function call passing in the hash buffer, casting and passing in the pin, pin length, the salt, salt length, iteration amount, key length, hash function
+    int ret = wc_PBKDF2(
+        hash_buf,                /* output */
+        (const byte*)pin,        /* password bytes (PIN) */
+        PIN_LENGTH,              /* password length in bytes */
+        pin_salt,                /* salt */
+        SALT_LEN,                /* salt length */
+        ITERATIONS,              /* iteration count */
+        DK_LEN,                  /* derived key length */
+        WC_SHA256                /* HMAC hash */
+    );
+
+    if (ret != 0) {
+        /* PBKDF2 failed */
+        return false;
+    }
+
+    /* Compare derived key to expected (from secrets.h) */
+    if (!consttime_memcomp(hash_buf, (const byte*)HSM_PIN, DK_LEN)) {
+        return false;
+    }
     return true;
 }
 
