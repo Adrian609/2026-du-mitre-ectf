@@ -97,47 +97,21 @@ def secrets_to_c_header(
     # Generate local AES key
     aes_128_local = token_hex(16)
 
-    # Compute PIN hash (adding [2:] is to strip the leading 0x)
+    # Compute PIN hash
 
-    #   iterations suffix
-    num_iterations_hex = hex(number_of_iterations)[2:].rjust(8, '0') # pad to 4 bytes
-    # print(num_iterations_hex)
-
-    #   number of extra salt bytes to be added to starting point of 16 salt bytes
-    num_extra_salt_bytes = randbelow(16)
-    num_extra_salt_bytes_hex = hex(num_extra_salt_bytes)[2:] # no need to pad, always 4 bits
-    # print(num_extra_salt_bytes_hex) 
-
-    #   the extra salt bytes
-    salt_bytes_hex = token_hex(16 + num_extra_salt_bytes) 
-    # print(salt_bytes_hex)
-    salt_bytes = bytes.fromhex(salt_bytes_hex)
+    #   salt bytes
+    salt_bytes_hex = token_hex(16) 
+    salt_bytes_hex_bytes = [ "0x" + salt_bytes_hex[i:i+2] for i in range(0, len(salt_bytes_hex), 2) ]
 
     #   the hash output itself
-    pin_hash_output_hex = hashlib.pbkdf2_hmac("sha256", hsm_pin.encode(), salt_bytes, number_of_iterations).hex()
-    # print(pin_hash_output_hex)
-
-    #   concat all values for final result
-    pin_hash = pin_hash_output_hex + salt_bytes_hex + num_extra_salt_bytes_hex + num_iterations_hex
-    #          |                     |                |                          |
-    #           -> 32B                -> 16-31B        -> 4 bits                  -> 4B
-
-            # now, to check a pin, do the C equivalent of the following line
-            # hashlib.pbkdf2_hmac("sha256", hsm_pin.encode(), bytes.fromhex(pin_hash[-41 - int(pin_hash[-9],16)*2 : -9]), int(pin_hash[-8:], 16)).hex()
-            #                                                 |                            |                              |
-            #                                                  ->salt bytes                 ->salt len                     ->num iterations        
-
-        # print(pin_hash)
-
-        # output_check = hashlib.pbkdf2_hmac("sha256", hsm_pin.encode(), bytes.fromhex(pin_hash[-41 - int(pin_hash[-9],16)*2 : -9]), int(pin_hash[-8:], 16)).hex()
-        # print(output_check)
+    pin_hash_output_hex = hashlib.sha256(bytes.fromhex(salt_bytes_hex) + hsm_pin.encode()).hexdigest()
+    pin_hash_output_hex_bytes = [ "0x" + pin_hash_output_hex[i:i+2] for i in range(0, len(pin_hash_output_hex), 2) ]
 
     # write out to file
     with open(os.path.join(path, "secrets.h"), 'w') as f:
         f.write("#ifndef __SECRETS_H__\n")
         f.write("#define __SECRETS_H__\n\n")
         f.write('#include "security.h"\n\n')
-        f.write(f'#define HSM_PIN 0x{pin_hash}\n')
         f.write(f'#define AES_128_SHARED 0x{aes_128_shared}\n')
         f.write(f'#define AES_128_LOCAL 0x{aes_128_local}\n\n')
         f.write("const static group_permission_t global_permissions[MAX_PERMS] = {\n")
@@ -147,6 +121,13 @@ def secrets_to_c_header(
                  f"{str(perm.write).lower()}, {str(perm.receive).lower()}}},\n")
             )
         f.write("};\n")
+
+        # pin hash struct
+        f.write("\nconst static pin_hash_t pin_hash = {\n")
+        f.write("\t{" + (", ").join(pin_hash_output_hex_bytes) + "},\n")
+        f.write("\t{" + (", ").join(salt_bytes_hex_bytes) + "}\n")
+        f.write("};\n")
+
         f.write("\n#endif  // __SECRETS_H__\n")
 
 if __name__ == '__main__':

@@ -1,1 +1,3 @@
 gen_secrets
+gen_secrets_testing
+validate_secrets_header

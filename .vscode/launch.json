@@ -1,0 +1,11 @@
+{
+    "configurations": [
+        {
+            "name": "Python Debugger: Python File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "args": ["./ectf26_design/src/secrets.out", "abc123", "1234=RWC"]
+        }
+    ]
+}

@@ -1,5 +1,7 @@
 pyproject.toml
 src/gen_secrets.py
+src/gen_secrets_testing.py
+src/validate_secrets_header.py
 src/ectf26_design.egg-info/PKG-INFO
 src/ectf26_design.egg-info/SOURCES.txt
 src/ectf26_design.egg-info/dependency_links.txt
