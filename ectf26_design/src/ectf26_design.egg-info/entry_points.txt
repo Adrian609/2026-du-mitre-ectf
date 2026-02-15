@@ -1,2 +1,0 @@
-[console_scripts]
-secrets = gen_secrets:main

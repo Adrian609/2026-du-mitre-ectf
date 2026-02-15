@@ -36,6 +36,8 @@
 #include <ti/devices/msp/msp.h>
 
 #include "status_led.h"
+#include "syscalls.h"
+
 
 /* Linker variable that marks the top of the stack. */
 extern unsigned long __STACK_END;
@@ -45,13 +47,15 @@ extern unsigned long __STACK_END;
 extern __NO_RETURN void __PROGRAM_START(void);
 
 /* Forward declaration of the default fault handlers. */
-void Default_Handler            (void) __attribute__((weak));
+extern void Default_Handler            (void) __attribute__((weak));
 extern void Reset_Handler       (void) __attribute__((weak));
+extern void SVC_Handler			(void) __attribute__((naked));
+
 
 /* Processor Exceptions */
 extern void NMI_Handler         (void) __attribute__((weak, alias("Default_Handler")));
 extern void HardFault_Handler   (void) __attribute__((weak, alias("Default_Handler")));
-extern void SVC_Handler         (void) __attribute__((weak, alias("Default_Handler")));
+//extern void SVC_Handler         (void) __attribute__((weak, alias("Default_Handler")));
 extern void PendSV_Handler      (void) __attribute__((weak, alias("Default_Handler")));
 extern void SysTick_Handler     (void) __attribute__((weak, alias("Default_Handler")));
 
@@ -152,12 +156,17 @@ void (*const interruptVectors[])(void) =
 /* actions (such as making decisions based on the reset cause register, and    */
 /* resetting the bits in that register) are left solely in the hands of the    */
 /* application.                                                                */
-void Reset_Handler(void)
+KERNEL_CODE void Reset_Handler(void)
 {
+    // Start SysTick as a stopwatch
+    SysTick->LOAD = 0xFFFFFF; // max period
+    SysTick->VAL  = 0;        // current value
+    SysTick->CTRL = 0x5;      // enable to use processor clock (no interrupt)
+
     /* Jump to the ticlang C Initialization Routine. */
     __asm(
         "    .global _c_int00\n"
-        "    b       _c_int00");
+        "    b       _c_int00\n");
 }
 
 /* This is the code that gets called when the processor receives an unexpected  */
@@ -165,10 +174,65 @@ void Reset_Handler(void)
 /* for examination by a debugger.                                               */
 // Note: we have added LEDs to this step for debugging purposes. It will light
 //  LED3 and LED4 to red
-void Default_Handler(void)
+KERNEL_CODE void Default_Handler(void)
 {
+
+	#if ON_BOARD
     STATUS_LED_OFF();
+	#endif
     /* Enter an infinite loop. */
     while (1) {
+
     }
+}
+
+
+/* This is the code that gets called when the SVC instruction is triggered.     */
+/* It extracts the SVC id from the calling instruction and passes it to the     */
+/* svc_handler_logic function along with a pointer to the stacked frame. Upon   */
+/* return, control is sent back to the calling code. Before SVC handler runs,   */
+/* hardware pushes xPSR, PC, LR, r12, r3, r2, r1, r0 into the stack. The stack  */
+/* used depends on whether we are coming from privileged mode (MSP used) or     */
+/* unprivileged mode (PSP used).                                                */
+
+// The "naked" attribute tells the compiler not to add any prologue
+KERNEL_CODE __attribute__((naked)) void SVC_Handler(void) {
+	__asm__ volatile (
+        "push {r4-r7, lr}                \n" // push r4-r7 (callee-saved registers) and lr (EXC_RETURN)
+        "mov  r4, r8                     \n" // copy high registers r8-r11 to low ones
+        "mov  r5, r9                     \n"
+        "mov  r6, r10                    \n"
+        "mov  r7, r11                    \n"
+        "push {r4-r7}                    \n" // save the high registers' values to stack
+ 
+		"mov r4, lr                      \n" // make a copy of lr	
+        // Determine which stack was in use 
+        "movs r0, #4                     \n" // populate r0 with 0x04 = 0b100 (bit mask to check which stack was in use)
+        "tst  r0, r4                     \n" // check the bit
+        "beq  1f                         \n" // its MSP; jump to 1:
+        "mrs  r0, psp                    \n" // its PSP; load PSP into r0
+        "b    2f                         \n"
+        "1: mrs r0, msp                  \n" // load MSP into r0
+		 "adds r0, #36                   \n" // skip the push {r4-r11,lr} to get MSP top at time of call
+
+        // Extract the SVC ID 
+        "2: ldr  r1, [r0, #24]           \n" // this will give PC (next instruction after SVC call in calling code)
+        "subs r1, r1, #2                 \n" // go back two bytes from there
+        "ldrb r1, [r1]                   \n" // we are now looking at the SVC id (copy it and save in r1)
+
+        // Call C logic (in systemcalls.c)
+        "ldr  r2, =svc_handler_logic     \n"
+        "blx  r2                         \n" // jumping to svc_handler_logic, C function so first arg is r0 (the stack top), second in r1 (SVC id)
+
+        // Do exception return
+		"pop {r4-r7}                     \n" // unroll, pop r4-r11, pop lr to r0
+        "mov  r8, r4                     \n" 
+        "mov  r9, r5                     \n"
+        "mov  r10, r6                    \n"
+        "mov  r11, r7                    \n"
+        "pop {r4-r7}                     \n" 
+        "pop {r0}                        \n" 
+        "bx   r0                         \n" // hardware sees 0xFFFFFFFx and unstacks
+        ".align 4                        \n"
+    );
 }

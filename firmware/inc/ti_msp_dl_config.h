@@ -111,7 +111,9 @@ extern "C" {
 #define UART_1_FBRD_32_MHZ_115200_BAUD                                      (23)
 
 
-
+/* Defines for TRNG */
+#define TRNG_INT_IRQN                                            (TRNG_INT_IRQn)
+#define TRNG_INT_IIDX                            (DL_INTERRUPT_GROUP1_IIDX_TRNG)
 
 
 /* Port definition for Pin Group LEDS */
@@ -136,7 +138,7 @@ void SYSCFG_DL_GPIO_init(void);
 void SYSCFG_DL_SYSCTL_init(void);
 void SYSCFG_DL_UART_0_init(void);
 void SYSCFG_DL_UART_1_init(void);
-
+void SYSCFG_DL_TRNG_init(void);
 
 
 #ifdef __cplusplus

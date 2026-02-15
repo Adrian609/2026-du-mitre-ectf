@@ -15,9 +15,11 @@
 #define __FILESYSTEM__
 
 #include <stdbool.h>
-#include "simple_flash.h"
+#include <stdint.h>
 
-// #include "commands.h"
+#include "simple_flash.h"
+#include "kernel.h"
+
 
 typedef unsigned char slot_t;
 typedef uint16_t group_id_t;
@@ -55,7 +57,6 @@ typedef struct {
     unsigned int flash_addr;
 } filesystem_entry_t;
 
-static filesystem_entry_t FILE_ALLOCATION_TABLE[MAX_FILE_COUNT];
 
 /**********************************************************
  *********** END FUNCTIONALLY DEFINED ELEMENTS ************
@@ -89,64 +90,77 @@ The reference design allocates files for each slot as follows:
 #define FILES_START_ADDR 0x10000
 
 #define FILE_IN_USE 0xdeadbeef
+
+#define MAX_AES_IV_SIZE  16
+#define MAX_AES_TAG_SIZE 16
+
 // used to actually define the file object
 typedef struct {
     uint32_t in_use;  // FILE_IN_USE if in use
     group_id_t group_id;
     char name[MAX_NAME_SIZE];
     uint16_t contents_len;
+    uint8_t aes_gcm_iv[MAX_AES_IV_SIZE];
+    uint8_t aes_gcm_tag[MAX_AES_TAG_SIZE];
     uint8_t contents[MAX_CONTENTS_SIZE];
 } file_t;
+
+// used to actually define the file metadata object
+typedef struct {
+    uint32_t in_use;  // FILE_IN_USE if in use
+    group_id_t group_id;
+    char name[MAX_NAME_SIZE];   
+    uint16_t contents_len;
+    uint8_t aes_gcm_iv[MAX_AES_IV_SIZE];
+    uint8_t aes_gcm_tag[MAX_AES_TAG_SIZE];
+} file_header_t;
 
 /** @brief Initialize the filesystem
  *
  *
  * @return 0 upon success. A negative value on error.
 */
-int init_fs();
-
-/** @brief Check whether a file is in use
- *
- *  @param slot The slot to check
- *
- * @return True if the slot is in use. False otherwise.
-*/
-bool is_slot_in_use(slot_t slot);
+KERNEL_CODE int init_fs();
 
 /** @brief Create a new file object in memory
  *
- *  @param slot The slot to check
+ *  @param dest: the file object buffer
+ *  @param group_id: file's group id
+ *  @param name: file's name (max MAX_NAME_SIZE characters)
+ *  @param contents_len: length of the file
+ *  @param contents: buffer holding file's contents
  *
  * @return 0 upon success. A negative value otherwise.
 */
 int create_file(file_t *dest, group_id_t group_id, char *name, uint16_t contents_len, uint8_t *contents);
 
-/** @brief Create a new file object in memory
+/** @brief Write a file to flash 
  *
  *  @param slot The slot to write the file to
- *  @param src The sourc file to store
+ *  @param src The source file to store
  *  @param uuid The UUID to store in the FAT
  *
  * @return 0 upon success. A negative value otherwise.
 */
-int write_file(slot_t slot, file_t *src, uint8_t *uuid);
+KERNEL_CODE int write_file(slot_t slot, file_t *src, uint8_t *uuid);
 
-/** @brief Read a file from persistent storage into memory
+/** @brief Read a file from flash storage to scracthpad
  *
  *  @param slot The slot to read
- *  @param dest The destination address to store the file
+ *  @param dest The destination address in flash to read into
  *
  * @return 0 upon success. A negative value otherwise.
 */
-int read_file(slot_t slot, file_t *dest);
+KERNEL_CODE int read_file(slot_t slot, file_t *dest);
 
-
-/** @brief Get a read-only pointer to a file's metadata
+/** @brief Read a file's metadata from persistent storage into memory
  *
- *  @param slot The slot to get metadata for
+ *  @param slot The slot to read
+ *  @param dest The destination address to store the file metadata
  *
- * @return A filesystem_entry_t * on success. NULL on error.
+ * @return 0 upon success. A negative value otherwise.
 */
-const filesystem_entry_t *get_file_metadata(slot_t slot);
+KERNEL_CODE int read_file_metadata(slot_t slot, file_header_t *dest);
+
 
 #endif

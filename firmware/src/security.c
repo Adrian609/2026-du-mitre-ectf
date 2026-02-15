@@ -1,37 +1,678 @@
 /**
  * @file security.c
- * @author Samuel Meyers
- * @brief Stub file to hold security checks
+ * @author University of Denver team
+ * @brief Secure handling of requests
  * @date 2026
  *
- * This source file is part of an example system for MITRE's 2026 Embedded CTF (eCTF).
- * This code is being provided only for educational purposes for the 2026 MITRE eCTF competition,
- * and may not meet MITRE standards for quality. Use this code at your own risk!
- *
- * @copyright Copyright (c) 2026 The MITRE Corporation
  */
+ 
+#define SECRETS_DEFINE
+#include "secrets.h"
+
 #include "security.h"
 #include "host_messaging.h"
+#include "kernel.h"
+#include "filesystem.h"
+#include "simple_flash.h"
+#include "commands.h"
+#include "simple_random.h"
+#include "user_settings.h"
 
-bool check_pin(unsigned char *pin) {
-    print_debug("Checking PIN\n");
+#include <stdint.h>
+#include <stdarg.h>
 
-    // TODO: the reference design doesn't implement *ANY* security.
-    // This function currently does nothing. Your team should add the
-    // appropriate security checks here to implement the security
-    // requirements.
-    return true;
+#include "wolfssl/wolfcrypt/hash.h"
+#include "wolfssl/wolfcrypt/hmac.h"
+#include "wolfssl/wolfcrypt/aes.h"
+#include "wolfssl/wolfcrypt/memory.h"
+#include "wolfssl/wolfcrypt/misc.h"
+
+// TODO: Move wolfssl to kernel code area
+
+extern filesystem_entry_t FILE_ALLOCATION_TABLE[MAX_FILE_COUNT]; // from filesystem.c
+
+extern uint32_t prng_counter;  // from simple_random.c
+
+
+// Checks if two values are same but using multiple steps
+// NOTE: The function where this is placed returns with provided
+// error code (err_code) on failure
+#define EQ_CHECK_BARRIER(actual, expected, err_code) do { \
+    volatile uint32_t _failed = 0x5A5A5A5A; \
+    volatile unsigned long long _a = (volatile unsigned long long)((actual)); \
+    volatile unsigned long long _e = (volatile unsigned long long)((expected)); \
+    if (_a != _e) {_failed = 0xA5A5A5A5; return((err_code));} \
+    if (_a == 0x0000000000000000ull) {_failed = 0xA5A5A5A5; return((err_code));} \
+    if (_a == 0xFFFFFFFFFFFFFFFFull) {_failed = 0xA5A5A5A5;  return((err_code));} \
+    if ((_a ^ _e) != 0x0000000000000000ull) {_failed = 0xA5A5A5A5;return((err_code));} \
+    if (_failed == 0xA5A5A5A5) {return((err_code));} \
+} while(0)
+
+
+/*
+ * A capability is about intent. It is given during pin check based on the
+ * command. CMD_TO_CAP_MAP is a lookup table of the capability given for a
+ * command. Functions require that a certain capability is active for them
+ * to proceed. Functions also require that certain permissions are present
+ * for file operations. We write these as two separate macros for reuse. 
+ *
+ * NOTE: An active capability is one-time use
+ */
+ 
+// Checks if required capability (req_cap) is equal to active capability
+// NOTE: active capability is erase irrespective of outcome
+#define SECURE_CAP_CHECK(req_cap) do { \
+    volatile uint8_t _actual = active_cap; \
+    active_cap = 0x00; \
+    __asm__ volatile("" ::: "memory"); \
+    EQ_CHECK_BARRIER(_actual, req_cap, PERM_ERR); \
+    active_cap = 0x00; \
+    _actual = 0x00; \
+    __asm__ volatile("" ::: "memory"); \
+} while(0)
+    
+    
+// Checks if a permission (req_perm) is present for a given group (group id) 
+// in a permission structure (perms_structure)
+// NOTE: only one of mr, mw or mc will be zero
+#define SECURE_PERM_CHECK(gid, req_perm, perms_structure) do { \
+    uint8_t volatile _have_perm = X_PERMISSION;\
+    for (int __i=0; __i < MAX_PERMS; __i++) { \
+         if ((perms_structure)[__i].group_id == (gid)) { \
+             uint8_t volatile _mr = !((perms_structure)[__i].read ^ (req_perm)); \
+             uint8_t volatile _mw = !((perms_structure)[__i].write ^ (req_perm)); \
+             uint8_t volatile _mc = !((perms_structure)[__i].receive ^ (req_perm)); \
+             _have_perm = _mr * (perms_structure)[__i].read + \
+                          _mw * (perms_structure)[__i].write + \
+                          _mc * (perms_structure)[__i].receive; \
+             break;\
+         } \
+    } \
+    EQ_CHECK_BARRIER(_have_perm, req_perm, PERM_ERR); \
+} while(0)
+
+
+
+// The internal capability state (set after pin check and reset
+// by command functions)
+KERNEL_DATA volatile uint8_t active_cap = 0x00;
+
+// Lookup table to map a command to a capability
+KERNEL_CONST uint8_t CMD_TO_CAP_MAP[256] = {
+    [LIST_MSG]        = CAP_READ_META,   // 'L'
+    [READ_MSG]        = CAP_READ,        // 'R'
+    [WRITE_MSG]       = CAP_WRITE,       // 'W'
+    [RECEIVE_MSG]     = CAP_RECEIVE,     // 'C'
+    [INTERROGATE_MSG] = CAP_FILTER_META, // 'I'
+    [LISTEN_MSG]      = CAP_SEND,        // 'N'
+};
+
+// Kernel scratchpad for internal operations
+KERNEL_STAGE file_t k_curr_file;
+KERNEL_STAGE file_t k_curr_file_b;
+
+// Copy of global permissions accessible by unprivileged code
+group_permission_t global_permissions_u[MAX_PERMS];
+
+// HMAC on global permissions structure
+uint8_t global_permissions_sig[HMAC_SIZE];
+
+// Wolfssl objects
+KERNEL_DATA static Aes e_gcm;
+KERNEL_DATA static Aes d_gcm;
+KERNEL_DATA __attribute__((aligned(4))) uint8_t wolfssl_e_heap[WOLFSSL_STATIC_MEM_SIZE];
+KERNEL_DATA __attribute__((aligned(4))) uint8_t wolfssl_d_heap[WOLFSSL_STATIC_MEM_SIZE];
+KERNEL_DATA WOLFSSL_HEAP_HINT* p_e_hint = NULL;
+KERNEL_DATA WOLFSSL_HEAP_HINT* p_d_hint = NULL; 
+
+
+
+/////////////////////////////////////////////////////////////////////////
+//
+// HELPER FUNCTIONS
+//
+/////////////////////////////////////////////////////////////////////////
+
+
+/** @brief Initialize security related structures
+*/
+KERNEL_CODE void init_security() {
+    
+    // Init encryption engine        
+    memset(&e_gcm, 0, sizeof(Aes));
+    memset(wolfssl_e_heap, 0, WOLFSSL_STATIC_MEM_SIZE);
+    
+    if (wc_LoadStaticMemory(&p_e_hint, wolfssl_e_heap, WOLFSSL_STATIC_MEM_SIZE, 
+                            WOLFMEM_GENERAL, 0) < 0) {
+        print_debug("Encrypt LoadStaticMemory failed\n");
+    }
+    
+    if (wc_AesInit(&e_gcm, p_e_hint, INVALID_DEVID) < 0) {
+        print_debug("Encrypt AesInit failed\n");
+    }
+    
+    // Init decryption engine
+    memset(&d_gcm, 0, sizeof(Aes));
+    memset(wolfssl_d_heap, 0, WOLFSSL_STATIC_MEM_SIZE);
+    
+    if (wc_LoadStaticMemory(&p_d_hint, wolfssl_d_heap, WOLFSSL_STATIC_MEM_SIZE, 
+                            WOLFMEM_GENERAL, 0) < 0) {
+        print_debug("Decrypt LoadStaticMemory failed\n");
+    }
+    
+    if (wc_AesInit(&d_gcm, p_d_hint, INVALID_DEVID) < 0) {
+        print_debug("Decrypt AesInit failed\n");
+    }
+
+    // Init prng counter
+    generate_trng_block((uint8_t *)&prng_counter, 4);       
+    
+    // Copy permission structure to user accessible placeholder    
+    memcpy((void *)global_permissions_u, (void *)global_permissions, 
+                                         sizeof(group_permission_t) * MAX_PERMS);
+    
+    // Compute HMAC on global permission structure and place it in user accessible memory
+    Hmac hmac;
+    wc_HmacSetKey(&hmac, WC_SHA256, (void *)aes_128_shared_key, AESGCM_KEY_SIZE);
+    wc_HmacUpdate(&hmac, (void *)global_permissions, sizeof(group_permission_t) * MAX_PERMS);
+    wc_HmacFinal(&hmac, (void *)global_permissions_sig);
+        
 }
 
-bool validate_permission(uint16_t group_id, permission_enum_t perm) {
-    char output_buf[128] = {0};
 
-    sprintf(output_buf, "Checking %c permissions for group: %hx\n", perm, group_id);
-    print_debug(output_buf);
+/** @brief Concatenate bytes and store in an output buffer
+ * 
+ * @param out: the output buffer 
+ * @param ...: variable list of arguments of the sequence
+ *             uint8_t *bytes1, uint32_t bytes1_len, uint8_t *bytes2, 
+ *             uint32_t bytes2_len, ..., NULL
+ *
+*/
+KERNEL_CODE void join_bytes(uint8_t *out, ...) {
+    va_list args;
+    va_start(args, out);
 
-    // TODO: the reference design doesn't implement *ANY* security.
-    // This function currently does nothing. Your team should add the
-    // appropriate security checks here to implement the security
-    // requirements.
-    return true;
+    uint32_t len_sum = 0;
+    uint8_t *next_bytes;
+
+    // Iterate through pairs until a NULL pointer
+    while ((next_bytes = va_arg(args, uint8_t*)) != NULL) {
+        uint32_t next_len = va_arg(args, uint32_t);
+        
+        if (next_len > 0) {
+            memcpy(out+len_sum, next_bytes, next_len);
+            len_sum += next_len;
+        }
+    }
+
+    va_end(args);
 }
+
+
+/** @brief Erase pages in the flash memory scratchpad
+ *
+ * @param address: start address in scratchpad
+ * @param size: number of bytes
+ *
+ * @return 0 on success else -1
+ *
+ * @note although size is an input, erases happen in multiples of flash page size
+ *
+*/
+KERNEL_CODE int erase_scratchpad_pages(uint32_t address, uint32_t size) {
+
+    // Address must be page aligned
+	if (address % FLASH_PAGE_SIZE != 0) return -1; 
+	
+	// Address must be in kernel staging area
+	if (address < START_KERNEL_STAGE) return -1; 
+	if (size > (END_KERNEL_STAGE - address + 1)) return -1;
+
+		
+    // Calculate number of pages based on size
+	uint32_t num_pages = (size + (FLASH_PAGE_SIZE - 1)) / FLASH_PAGE_SIZE;
+
+    // Erase the pages
+	for (uint32_t p = 0; p < num_pages; p++) {
+		uint32_t page_addr = address + (p * FLASH_PAGE_SIZE);
+		
+		if (flash_simple_erase_page(page_addr) < 0) return -1;
+	}
+
+	return 0;
+}
+
+
+/** @brief  Copy data from in to out while performing encrypt/decrypt
+ *
+ * @param in_buffer: input buffer
+ * @param out_buffer: output_buffer
+ * @param key: encryption/decryption key
+ * @param mode: XFORM_ENC (encrypt) or XFORM_DEC (decrypt)
+ * @param tag: tag (encrypt write tag, decrypt uses provided value to 
+ *             verify integrity)
+ * @param iv: iv (encrypt writes new iv, decrypt uses provided value)
+ * @param len: data length
+ * @param clear_offset: number of bytes from in_buffer that should be 
+ *                      plainly copied from in to out
+ * @param is_dest_flash: boolean saying if out_buffer is in flash
+ *
+ * @note The function uses an internal buffer to perform the operations
+ *       as wolfssl performs SRAM write; also we do the move in chunks;
+ *       tag size is assumed to be AESGCM_TAG_SIZE, iv size is assumed to
+ *       be AESGCM_IV_SIZE
+ *
+ * 	TODO: currently this is plain copy without encryption/decryption
+*/
+KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer, 
+                                uint8_t *key, xform_mode_t mode,
+                                uint8_t *tag, uint8_t *iv,
+                                uint32_t len, uint32_t clear_offset,
+                                bool is_dest_flash) {
+
+	uint8_t buffer[FLASH_PAGE_SIZE] = {0};
+	
+	if (is_dest_flash) {
+	    for (int i = 0; i < ((len + FLASH_PAGE_SIZE - 1) / FLASH_PAGE_SIZE) * FLASH_PAGE_SIZE; i++)
+		    flash_simple_erase_page((uint32_t)(out_buffer+i));
+		    
+		flash_simple_write((uint32_t)(out_buffer), in_buffer, len);
+		
+	} else {
+	
+		memcpy(out_buffer, in_buffer, len);
+		
+	}
+		
+
+	return 0;
+}
+
+
+/** @brief Derive a key (max 256 bit) using HMAC-SHA256
+ *
+ * @param secret: HMAC secret
+ * @param nonce: the bytes to use as nonce in key derivation
+ * @param nonce_len: size of nonce
+ * @param key: buffer for output key (size if AESGCM_KEY_SIZE, 128 bit default)
+ * 
+ * @return 0 on success else -1
+ *
+ * TODO: Currently this just creates an all zero key
+*/
+KERNEL_CODE int create_key(uint8_t *secret, uint8_t *nonce, uint32_t nonce_len, uint8_t *key) {
+ 
+    memset(key, 0x0, AESGCM_KEY_SIZE);
+
+    return 0;
+    
+}
+
+
+/** @brief Copy file meta from source to destination if C permission available
+ *         on file group
+ *
+ * @param dest: the destination file metadata object
+ * @param src: the source file metadata object
+ *
+ * @return 0 on success, negative number otherwise
+ *
+*/
+KERNEL_CODE int copy_meta_if_C_permitted(file_metadata_t *dest, file_metadata_t *src) {
+    group_id_t group_id = src->group_id;  // the file's group id
+    
+    // Check if C permission is present on group  
+    SECURE_PERM_CHECK(group_id, C_PERMISSION, global_permissions);
+    
+    // Copy over the meta data
+    memcpy(dest, src, sizeof(file_metadata_t));
+    
+    return 0;
+}
+
+
+/////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////
+
+
+/////////////////////////////////////////////////////////////////////////
+//
+// SECURITY FUNCTIONS
+//
+/////////////////////////////////////////////////////////////////////////
+
+
+/** @brief Check pin and set active capability based on command
+ *
+ * @param cmd: the command
+ * @param pin: the pin to check
+ *
+ * @return 0 on success, negative number on error
+ *
+ * @security_req pin hash must match stored hash
+ *
+*/
+KERNEL_CODE int secure_check_pin(msg_type_t cmd, unsigned char *pin) {
+    
+    if (cmd == LISTEN_MSG) { // pin not required for listen command
+        active_cap = CMD_TO_CAP_MAP[LISTEN_MSG];
+        return 0;
+    } 
+    
+    if (pin == NULL) return INTERNAL_ERR;    
+
+	active_cap = 0x00;  // no capability
+	__asm__ volatile("" ::: "memory");  // memory sync
+    
+        
+    byte salted_pin[PIN_SALT_LEN + PIN_LENGTH];
+    byte computed_hash[PIN_HASH_LEN];
+
+    // Compute SHA256 hash of (salt | pin)
+    memcpy(&salted_pin[0], (void *)pin_hash.salt, PIN_SALT_LEN);
+    memcpy(&salted_pin[PIN_SALT_LEN], pin, PIN_LENGTH);
+    
+    int hc = wc_Sha256Hash((const byte*)salted_pin, (word32)(PIN_SALT_LEN + PIN_LENGTH), computed_hash);
+    if (hc != 0) {
+        return INTERNAL_ERR;
+    }
+    
+    // Compare derived hash to expected (from secrets.h)
+    int ret = ConstantCompare(computed_hash, (void *)pin_hash.hash, PIN_HASH_LEN) ^ 0xA5A5A5A5u;    
+    EQ_CHECK_BARRIER(ret & 0xFFFFFFFFu, 0xA5A5A5A5u, PIN_ERR);
+    
+    memset(computed_hash, 0x00, PIN_HASH_LEN); // scrub the hash
+
+    // Lookup capability based on command and set as active
+    active_cap = CMD_TO_CAP_MAP[cmd];
+
+
+    return 0;
+}
+
+
+/** @brief Read a file, decrypt it, and provide to local user
+ *
+ * @param slot: the slot number
+ * @param curr_file: user buffer to return the file
+ *
+ * @return 0 on success, negative number on error
+ *
+ * @note Runs for READ command
+ *
+ * @security_req active_cap = CAP_READ and R permission on file group
+ *
+*/
+KERNEL_CODE int secure_read_file(slot_t slot, file_t *curr_file) {
+
+	file_header_t f_header;
+	    
+    int ret = -1;
+    
+    if (curr_file == NULL) return INTERNAL_ERR;
+    if (slot < 0 || slot > 7) return READ_ERR;
+
+    // Read the file header
+	if (read_file_metadata(slot, &f_header) < 0) {
+        return READ_META_ERR;
+    }
+
+    // TODO: need to check capability+permission, read file, decrypt it, and then copy
+    // to user buffer
+    
+	return ret;
+	
+}
+
+
+/** @brief Prepare a list of file metadata and provide to local user
+ *
+ * @param file_list_ptr: user buffer to return the file list
+ *
+ * @return 0 on success, negative number on error
+ *
+ * @note Runs for LIST command
+ *
+ * @security_req active_cap = CAP_READ_META
+ *
+*/
+KERNEL_CODE int secure_read_file_meta(void *file_list_ptr) {
+
+    list_response_t *file_list = (list_response_t *)file_list_ptr;
+          
+    if (file_list_ptr == NULL) return INTERNAL_ERR;
+    
+    
+    // No specific permissions checked here but active capability 
+    // must be equal to required capability
+    SECURE_CAP_CHECK(CAP_READ_META);
+    
+    
+    /** Begin operation **/
+        
+        
+    file_header_t header;
+    file_list->n_files = 0;
+
+    // Loop through all files on the system
+    for (uint8_t i = 0; i < MAX_FILE_COUNT; i++) {
+    
+        // Read file metadata
+        if (read_file_metadata(i, &header) < 0) {
+            continue;  // nothing in slot i
+        }
+    
+        // If the file is in use, populate response
+        if (header.in_use == FILE_IN_USE) {			
+            file_list->metadata[file_list->n_files].slot = i;
+            file_list->metadata[file_list->n_files].group_id = header.group_id;
+			
+            strncpy(file_list->metadata[file_list->n_files].name, 
+                    (char *)&header.name, MAX_NAME_SIZE);
+            file_list->n_files++;
+        }
+        
+    }
+
+	return 0;    
+}
+
+
+/** @brief Write a file after encryption
+ *
+ * @param slot: the slot number to write at
+ * @param src: user buffer with file data
+ * @param uuid: the UUID to use for the file
+ *
+ * @return 0 on success, negative number on error
+ *
+ * @note Runs for WRITE command
+ *
+ * @security_req active_cap = CAP_WRITE and W permission on file group
+ *
+*/
+KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid) {
+
+    int ret = -1;
+
+    if (src == NULL || uuid == NULL) return INTERNAL_ERR;
+    if (slot < 0 || slot > 7) return WRITE_ERR;
+    
+    
+    // TODO: need to check capability+permission, create a key, encrypt file in user
+    // buffer, then write to flash storage
+    
+    return -1;
+    
+}
+
+
+/** @brief Prepare a list of encrypted file metadata for remote user
+ *
+ * @param file_list_ptr: user buffer for encrypted file metadata
+ *
+ * @return 0 on success, negative number on error
+ *
+ * @note Runs for INTERROGATE command on responder side
+ *
+ * @security_req active_cap = CAP_SEND and W permission on reported files
+ *
+*/
+KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr) {
+
+    list_response_enc_t *file_list_transfer = (list_response_enc_t *)file_list_ptr;
+    list_response_t k_file_list;
+                
+    int ret = -1;   
+    
+    if (file_list_ptr == NULL) return INTERNAL_ERR;
+    
+    
+    // Active capability must be equal to required capability
+    SECURE_CAP_CHECK(CAP_SEND);
+    
+    
+    // Prepare metadata in internal buffer
+    memset(&k_file_list, 0x0, sizeof(list_response_t));    
+    k_file_list.n_files = 0;
+    
+
+    // Loop through all files on the system
+    file_header_t header;
+    
+    for (uint8_t i = 0; i < MAX_FILE_COUNT; i++) {
+        // Read file metadata
+        if (read_file_metadata(i, &header) < 0) {
+            continue;  // no file in slot
+        }
+    
+        // If the file is in use
+        if (header.in_use == FILE_IN_USE) {	
+        
+            // Since write permission needed to transfer a file, check if 
+            // write permission is present on group (secure_read_file_for_transfer 
+            // enforces this securely during actual transfer)
+            for (int j=0; j < MAX_PERMS; j++) {
+                if (global_permissions[j].group_id == header.group_id && 
+                    global_permissions[j].write == W_PERMISSION) {
+                
+                    k_file_list.metadata[k_file_list.n_files].slot = i;
+                    k_file_list.metadata[k_file_list.n_files].group_id = header.group_id;
+			
+                    strncpy(k_file_list.metadata[k_file_list.n_files].name, (char *)&header.name, MAX_NAME_SIZE);
+                    k_file_list.n_files++;
+                }
+            }
+        }
+    }
+    
+    // TODO: need to create a session key, encrypt the data, and put in user buffer
+    
+    	    
+	return -1;
+    
+}
+
+
+/** @brief Filter received list of encrypted file metadata and provide to local user
+ *
+ * @param file_list_ptr: user buffer with encrypted file metadata
+ * @param nonce: this side's nonce used in transfer encryption
+ *
+ * @return 0 on success (user buffer will contain decrypted content), 
+ *         negative number on error
+ *
+ * @note Runs for INTERROGATE command on initiator side
+ *
+ * @security_req active_cap = CAP_FILTER_META and C permission on reported files
+ *
+*/
+KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce) {
+    list_response_enc_t *file_list_transfer = (list_response_enc_t *)file_list_ptr;
+    list_response_t k_file_list;
+    uint8_t key[AESGCM_KEY_SIZE] = {0};
+    
+    int ret = -1;
+   
+   
+    if (file_list_ptr == NULL || nonce == NULL) return INTERNAL_ERR;
+    
+    
+    // TODO: need to check capability, create session key, decrypt received data, filter
+    // the list based on permission, and put result in user buffer
+    
+    
+	
+    return -1;
+}
+
+
+/** @brief Prepare an encrypted file for remote user
+ *
+ * @param request_ptr: user buffer with request details (in/out slots, remote permissions)
+ * @param response_ptr: user buffer for encrypted file data
+ *
+ * @return 0 on success, negative number on error
+ *
+ * @note Runs for RECEIVE command on responder side
+ *
+ * @security_req active_cap = CAP_SEND, local W permission and remote C permission on file
+ *
+*/
+KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_ptr) {
+    receive_request_t *request = (receive_request_t *)request_ptr;
+    receive_response_enc_t *response = (receive_response_enc_t *)response_ptr;        
+
+    int ret = -1;
+    
+    if (request_ptr == NULL || response_ptr == NULL) return INTERNAL_ERR;
+    
+    slot_t slot = request->slot;       
+    if (slot < 0 || slot > 7) return READ_ERR;
+    
+    
+    // TODO: need to check capability, check permissions, decrypt local file and re-encrypt 
+    // for transfer
+    
+    return -1;
+}
+
+
+/** @brief Decrypt received file, re-encrypt and store 
+ *
+ * @param response_ptr: user buffer with encrypted file data
+ * @param req_nonce: the nonce used during request
+ * @param slot: slot number to write to
+ *
+ * @return 0 on success, negative number on error
+ *
+ * @note Runs for RECEIVE command on initiator side
+ *
+ * @security_req active_cap = CAP_RECEIVE and C permission on file
+ *
+*/
+KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req_nonce, slot_t slot) {
+    receive_response_enc_t *response = (receive_response_enc_t *)response_ptr;
+    
+    
+    int ret = -1;
+    
+    if (response_ptr == NULL || req_nonce == NULL) return INTERNAL_ERR;
+    if (slot < 0 || slot > 7) return RECEIVE_ERR;
+    
+    // TODO: need to decrypt received file, check capability+permission, create local key,
+    // re-encrypt with key and store file
+    
+
+    return -1;
+}
+
+
+
+
+
+
+

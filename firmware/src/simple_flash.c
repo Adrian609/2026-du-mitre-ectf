@@ -12,6 +12,30 @@
  */
 
 #include "simple_flash.h"
+#include "host_messaging.h"
+#include "kernel.h"
+
+
+#if !ON_BOARD
+
+KERNEL_CODE int flash_simple_erase_page(uint32_t address) {
+    // In Renode's default MappedMemory, 'erasing' is just writing 0xFF
+    // A standard page size is usually 1KB (0x400) 
+    memset((void *)address, 0xFF, FLASH_PAGE_SIZE); 
+    return 0;
+}
+
+KERNEL_CODE void flash_simple_read(uint32_t address, void* buffer, uint32_t size) {
+    memcpy(buffer, (void *)address, size);
+}
+
+KERNEL_CODE int flash_simple_write(uint32_t address, void* buffer, uint32_t size) {
+    // In Renode, we can write directly to the flash memory address
+    memcpy((void *)address, buffer, size);
+    return 0;
+}
+
+#else
 
 /**
  * @brief Flash Simple Erase Page
@@ -25,18 +49,25 @@
  * Once erased, memory can only be written one way e.g. 1->0.
  * In order to be re-written the entire page must be erased.
 */
-int flash_simple_erase_page(uint32_t address) {
+KERNEL_CODE int flash_simple_erase_page(uint32_t address) {
+
     volatile DL_FLASHCTL_COMMAND_STATUS cmdStatus;
     DL_FlashCTL_executeClearStatus(FLASHCTL);
+
     DL_FlashCTL_unprotectSector(FLASHCTL, address, DL_FLASHCTL_REGION_SELECT_MAIN);
 
-    cmdStatus = DL_FlashCTL_eraseMemoryFromRAM(
-        FLASHCTL, address, DL_FLASHCTL_COMMAND_SIZE_SECTOR);
+    // Controller runs code from RAM; so allow execute briefly
+    K_SRAM_EXECUTE(
+        cmdStatus = DL_FlashCTL_eraseMemoryFromRAM(
+            FLASHCTL, address, DL_FLASHCTL_COMMAND_SIZE_SECTOR);
+    );
+    
     if (cmdStatus == DL_FLASHCTL_COMMAND_STATUS_FAILED) {
         return -1;
     }
     // returns a boolean, so handle that accordingly
     bool ret = DL_FlashCTL_waitForCmdDone(FLASHCTL);
+
     if (ret == false) {
         return -1;
     }
@@ -53,7 +84,7 @@ int flash_simple_erase_page(uint32_t address) {
  * This function reads data from the specified flash page into the buffer
  * with the specified amount of bytes
 */
-void flash_simple_read(uint32_t address, void* buffer, uint32_t size) {
+KERNEL_CODE void flash_simple_read(uint32_t address, void* buffer, uint32_t size) {
     // flash is memory mapped, and the flash controller has no read functionality
     memcpy(buffer, (void *)address, size);
 }
@@ -72,32 +103,54 @@ void flash_simple_read(uint32_t address, void* buffer, uint32_t size) {
  * way e.g. 1->0. To rewrite previously written memory see the
  * flash_simple_erase_page documentation.
 */
-int flash_simple_write(uint32_t address, void* buffer, uint32_t size) {
+KERNEL_CODE int flash_simple_write(uint32_t address, void* buffer, uint32_t size) {
     volatile DL_FLASHCTL_COMMAND_STATUS cmdStatus;
+    uint8_t *src = (uint8_t *)buffer;
+    
+    
+    // 64-bit programming wants 8-byte alignment
+    if (address & 0x7u) return -1;
+    
+    uint32_t write_data[512 / 4]; // doing 512 bytes at a time
+    
     DL_FlashCTL_executeClearStatus(FLASHCTL);
     DL_FlashCTL_unprotectSector(FLASHCTL, address, DL_FLASHCTL_REGION_SELECT_MAIN);
-
-    // program function expects size to be the number of 32-bit words
-    uint32_t size_32b = (size % 4 == 0) ? (size / 4) : (size / 4) + 1;
-    // it also expects it to be an even number
-    size_32b = (size_32b % 2 == 0) ? size_32b : size_32b + 1;
-
-    // write the data into a correctly sized region to ensure no undefined behavior
-    uint32_t write_data[size_32b];
-    memset(write_data, 0xff, size_32b*4);
-    memcpy(write_data, buffer, size);
-
-    // if memory section is corrected, make sure to write the ECC (you have been warned)
-    cmdStatus = DL_FlashCTL_programMemoryBlockingFromRAM64WithECCGenerated(
-        FLASHCTL, address, (uint32_t *)write_data, size_32b, DL_FLASHCTL_REGION_SELECT_MAIN
-    );
-    if (cmdStatus == DL_FLASHCTL_COMMAND_STATUS_FAILED) {
-        return -1;
+    
+    // Due to kernel stack limits, we do writes in 512 byte chunks
+    while (size > 0) {
+        uint32_t n = (size >= 512) ? 512 : size;
+        
+        // program function expects size to be the number of 32-bit words
+        uint32_t size_32b = (n % 4 == 0) ? (n / 4) : (n / 4) + 1;
+        // it also expects it to be an even number
+        size_32b = (size_32b % 2 == 0) ? size_32b : size_32b + 1;
+        
+        memset(write_data, 0xff, size_32b*4);
+        memcpy(write_data, src, n);
+        
+        // Controller runs code from RAM; so allow execute briefly
+        K_SRAM_EXECUTE(
+            // if memory section is corrected, make sure to write the ECC (you have been warned)
+            cmdStatus = DL_FlashCTL_programMemoryBlockingFromRAM64WithECCGenerated(
+                FLASHCTL, address, (uint32_t *)write_data, size_32b, DL_FLASHCTL_REGION_SELECT_MAIN
+            );
+        );
+        
+        if (cmdStatus == DL_FLASHCTL_COMMAND_STATUS_FAILED) {
+            return -1;
+        }
+        // returns a boolean, so handle that accordingly
+        bool ret = DL_FlashCTL_waitForCmdDone(FLASHCTL);
+        if (ret == false) {
+            return -1;
+        }
+        
+        address += size_32b*4;
+        src += n;
+        size -= n;
     }
-    // returns a boolean, so handle that accordingly
-    bool ret = DL_FlashCTL_waitForCmdDone(FLASHCTL);
-    if (ret == false) {
-        return -1;
-    }
+
     return 0;
 }
+
+#endif
