@@ -242,7 +242,6 @@ KERNEL_CODE int erase_scratchpad_pages(uint32_t address, uint32_t size) {
 	return 0;
 }
 
-
 /** @brief  Copy data from in to out while performing encrypt/decrypt
  *
  * @param in_buffer: input buffer
@@ -270,24 +269,88 @@ KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
                                 uint32_t len, uint32_t clear_offset,
                                 bool is_dest_flash) {
 
-	uint8_t buffer[FLASH_PAGE_SIZE] = {0};
-	
-	if (is_dest_flash) {
-	    for (int i = 0; i < ((len + FLASH_PAGE_SIZE - 1) / FLASH_PAGE_SIZE) * FLASH_PAGE_SIZE; i++)
-		    flash_simple_erase_page((uint32_t)(out_buffer+i));
-		    
-		flash_simple_write((uint32_t)(out_buffer), in_buffer, len);
-		
-	} else {
-	
-		memcpy(out_buffer, in_buffer, len);
-		
-	}
-		
+    // validate parameters
+    if(in_buffer == NULL || out_buffer == NULL || key == NULL || tag == NULL || iv == NULL) return INTERNAL_ERR;
+    if(mode != XFORM_COPY && mode != XFORM_ENC && mode != XFORM_DEC) return INTERNAL_ERR;
+
+    // clamp clear_offset to len
+    if(clear_offset > len) clear_offset = len;
+
+    // crypto init, if any
+    if (mode == XFORM_ENC) {
+        generate_random_bytes(iv, AESGCM_IV_SIZE);
+        int ret = wc_AesGcmEncryptInit(&e_gcm, key, AESGCM_KEY_SIZE, iv, AESGCM_IV_SIZE);
+        if(ret < 0) return AES_ENCRYPT_ERR;
+    } else if (mode == XFORM_DEC) {
+        int ret = wc_AesGcmDecryptInit(&d_gcm, key, AESGCM_KEY_SIZE, iv, AESGCM_IV_SIZE);
+        if(ret < 0) return AES_DECRYPT_ERR;
+    }
+
+    // initialize buffer with zeroes 
+	uint8_t sram_buffer[FLASH_PAGE_SIZE] = {0};
+
+    for(int i = 0; i < len; i += FLASH_PAGE_SIZE) {
+
+        // clear sram_buffer
+        memset(sram_buffer, 0x00, FLASH_PAGE_SIZE);
+
+        // figure out how many bytes to copy 
+        int n;
+        if(i + FLASH_PAGE_SIZE < len) {
+            n = FLASH_PAGE_SIZE;
+        } else {
+            n = len - i;
+        }
+
+        // how many bytes in this chunk are clear
+        int clear_bytes = 0;
+        if(clear_offset <= i) {
+            clear_bytes = 0;
+        } else if(clear_offset >= i + n) {
+            clear_bytes = n;
+        } else {
+            clear_bytes = clear_offset - i;
+        }
+
+        // how many bytes in this chunk are to be encrypted or decrypted
+        int remaining_bytes = n - clear_bytes;
+
+        // copy clear bytes
+        if(clear_bytes > 0) {
+            memcpy(sram_buffer, in_buffer+i, clear_bytes);
+        }
+
+        // perform crypto operations
+        if(remaining_bytes > 0) {
+            if (mode == XFORM_ENC) {
+                int ret = wc_AesGcmEncryptUpdate(&e_gcm, sram_buffer + clear_bytes, in_buffer + i + clear_bytes, remaining_bytes, NULL, 0);
+                if(ret < 0) return AES_ENCRYPT_ERR;
+            } else if (mode == XFORM_DEC) {
+                int ret = wc_AesGcmDecryptUpdate(&d_gcm, sram_buffer + clear_bytes, in_buffer + i + clear_bytes, remaining_bytes, NULL, 0);
+                if(ret < 0) return AES_DECRYPT_ERR;
+            }
+        }
+
+        // write the page
+        if(is_dest_flash) {
+            flash_simple_erase_page((uint32_t)(out_buffer+i));
+            flash_simple_write((uint32_t)(out_buffer+i), sram_buffer, len);
+        } else {
+            memcpy(out_buffer+i, in_buffer+i, n);
+        }
+    }
+
+    // finalize encryption or verify decryption
+    if (mode == XFORM_ENC) {
+        int ret = wc_AesGcmEncryptFinal(&e_gcm, tag, AESGCM_TAG_SIZE);
+        if(ret < 0) return AES_ENCRYPT_ERR;
+    } else if (mode == XFORM_DEC) {
+        int ret = wc_AesGcmDecryptFinal(&d_gcm, tag, AESGCM_TAG_SIZE);
+        if(ret < 0) return AES_TAG_ERR;
+    }
 
 	return 0;
 }
-
 
 /** @brief Derive a key (max 256 bit) using HMAC-SHA256
  *
