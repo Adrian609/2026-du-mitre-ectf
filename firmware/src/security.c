@@ -544,16 +544,62 @@ KERNEL_CODE int secure_read_file_meta(void *file_list_ptr) {
 */
 KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid) {
 
-    int ret = -1;
+ int ret = -1;
+    file_header_t f_header;
+    uint8_t key[AESGCM_KEY_SIZE] = {0};
 
     if (src == NULL || uuid == NULL) return INTERNAL_ERR;
     if (slot < 0 || slot > 7) return WRITE_ERR;
     
+    // Check required capability
+    SECURE_CAP_CHECK(CAP_WRITE);
     
-    // TODO: need to check capability+permission, create a key, encrypt file in user
-    // buffer, then write to flash storage
+    // Get group ID from file metadata (or use from src if available)
+    group_id_t group_id = src->metadata.group_id;
     
-    return -1;
+    // Check write permission on file group
+    SECURE_PERM_CHECK(group_id, W_PERMISSION, global_permissions);
+    
+    // Create encryption key from UUID/secret
+    if (create_key((uint8_t *)aes_128_shared_key, uuid, AESGCM_TAG_SIZE, key) < 0) {
+        return INTERNAL_ERR;
+    }
+    
+    // Generate IV and tag for encryption
+    uint8_t iv[AESGCM_IV_SIZE] = {0};
+    uint8_t tag[AESGCM_TAG_SIZE] = {0};
+    generate_trng_block(iv, AESGCM_IV_SIZE);
+    
+    // Encrypt file data in user buffer
+    if (copy_with_transform((uint8_t *)src, (uint8_t *)&k_curr_file, 
+                           key, XFORM_ENC, tag, iv, sizeof(file_t), 0, false) < 0) {
+        return INTERNAL_ERR;
+    }
+    
+    // Prepare file header
+    memset(&f_header, 0, sizeof(file_header_t));
+    f_header.in_use = FILE_IN_USE;
+    f_header.group_id = group_id;
+    memcpy(f_header.name, src->metadata.name, MAX_NAME_SIZE);
+    memcpy(f_header.iv, iv, AESGCM_IV_SIZE);
+    memcpy(f_header.tag, tag, AESGCM_TAG_SIZE);
+    
+    // Write file header and encrypted data to flash
+    if (write_file_metadata(slot, &f_header) < 0) {
+        return WRITE_ERR;
+    }
+    
+    // Write encrypted file data to flash
+    if (write_file_data(slot, (uint8_t *)&k_curr_file, sizeof(file_t)) < 0) {
+        return WRITE_ERR;
+    }
+    
+    // Scrub sensitive data
+    memset(key, 0x00, AESGCM_KEY_SIZE);
+    memset(iv, 0x00, AESGCM_IV_SIZE);
+    memset(&k_curr_file, 0x00, sizeof(file_t));
+    
+    return 0;
     
 }
 
