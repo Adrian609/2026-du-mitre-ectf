@@ -133,6 +133,25 @@ KERNEL_DATA WOLFSSL_HEAP_HINT* p_d_hint = NULL;
 //
 /////////////////////////////////////////////////////////////////////////
 
+//TO REMOVE
+KERNEL_CODE static void test_create_key_once(void) {
+    uint8_t nonce[12] = {0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,0x1A,0x1B};
+    uint8_t key[AESGCM_KEY_SIZE] = {0};
+
+    int rc = create_key((uint8_t*)aes_128_shared_key, nonce, sizeof(nonce), key);
+    if (rc == 0) {
+        print_debug("create_key OK\n");
+        print_hex_debug(key, 32);
+        // Optional: print first bytes only
+        // print_debug("k0=%02x k1=%02x\n", key[0], key[1]);
+    } else {
+        print_debug("create_key FAIL\n");
+    }
+
+    memset(key, 0, sizeof(key));
+}
+
+
 
 /** @brief Initialize security related structures
 */
@@ -165,7 +184,9 @@ KERNEL_CODE void init_security() {
     }
 
     // Init prng counter
-    generate_trng_block((uint8_t *)&prng_counter, 4);       
+    generate_trng_block((uint8_t *)&prng_counter, 4);      
+    
+    test_create_key_once();
     
     // Copy permission structure to user accessible placeholder    
     memcpy((void *)global_permissions_u, (void *)global_permissions, 
@@ -207,6 +228,8 @@ KERNEL_CODE void join_bytes(uint8_t *out, ...) {
 
     va_end(args);
 }
+
+
 
 
 /** @brief Erase pages in the flash memory scratchpad
@@ -301,12 +324,37 @@ KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
  * TODO: Currently this just creates an all zero key
 */
 KERNEL_CODE int create_key(uint8_t *secret, uint8_t *nonce, uint32_t nonce_len, uint8_t *key) {
- 
-    memset(key, 0x0, AESGCM_KEY_SIZE);
+    int ret = INTERNAL_ERR;
+    Hmac h;
+    uint8_t digest[HMAC_SIZE]; // SHA-256 output size
+
+    if (key == NULL || secret == NULL || nonce == NULL) return INTERNAL_ERR;
+    if (nonce_len <= 0 || AESGCM_KEY_SIZE <= 0) return INTERNAL_ERR;
+    if (nonce_len > 0 && nonce == NULL) return INTERNAL_ERR;
+    if (AESGCM_KEY_SIZE > (int)sizeof(digest)) return INTERNAL_ERR;
+
+
+    ret = wc_HmacInit(&h, NULL, INVALID_DEVID);
+    if (ret != 0) return INTERNAL_ERR;
+
+   
+    // KDF(secret_type, nonce_data) = HMAC-SHA256(AES_SHARED_KEY, secret_type || nonce_data)
+    ret = wc_HmacSetKey(&h, WC_SHA256, secret, AESGCM_KEY_SIZE);
+    if (ret == 0 && nonce_len > 0) ret = wc_HmacUpdate(&h, nonce, (word32)nonce_len);
+    if (ret == 0) ret = wc_HmacFinal(&h, digest);
+
+    wc_HmacFree(&h);
+    if (ret != 0) {
+        memset(digest, 0, sizeof(digest));
+        return INTERNAL_ERR;
+    }
+
+    memcpy(key, digest, AESGCM_KEY_SIZE);
+    memset(digest, 0x0, sizeof(digest)); // Clear sensitive data from memory
 
     return 0;
-    
 }
+    
 
 
 /** @brief Copy file meta from source to destination if C permission available

@@ -14,7 +14,7 @@ LINKERFILE = "firmware_mod.ld"
 CRYPTO_EXAMPLE = 1
 
 # TODO: set to 1 when compiling for board, to 0 for Renode
-ON_BOARD = 1
+ON_BOARD = 0
 
 OBJECTS = $(BUILDDIR)/HSM.so \
     $(BUILDDIR)/simple_uart.so \
