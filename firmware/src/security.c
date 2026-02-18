@@ -340,6 +340,10 @@ KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
         }
     }
 
+    // ensure sram memory is cleared
+    memset(sram_buffer, 0x00, FLASH_PAGE_SIZE);
+    __asm__ volatile("" ::: "memory"); \
+
     // finalize encryption or verify decryption
     if (mode == XFORM_ENC) {
         int ret = wc_AesGcmEncryptFinal(&e_gcm, tag, AESGCM_TAG_SIZE);
