@@ -261,7 +261,6 @@ KERNEL_CODE int erase_scratchpad_pages(uint32_t address, uint32_t size) {
  *       tag size is assumed to be AESGCM_TAG_SIZE, iv size is assumed to
  *       be AESGCM_IV_SIZE
  *
- * 	TODO: currently this is plain copy without encryption/decryption
 */
 KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer, 
                                 uint8_t *key, xform_mode_t mode,
@@ -271,7 +270,7 @@ KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
 
     // validate parameters
     if(in_buffer == NULL || out_buffer == NULL || key == NULL || tag == NULL || iv == NULL) return INTERNAL_ERR;
-    if(mode != XFORM_COPY && mode != XFORM_ENC && mode != XFORM_DEC) return INTERNAL_ERR;
+    if(mode != XFORM_ENC && mode != XFORM_DEC) return INTERNAL_ERR;
 
     // clamp clear_offset to len
     if(clear_offset > len) clear_offset = len;
@@ -317,7 +316,7 @@ KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
 
         // copy clear bytes
         if(clear_bytes > 0) {
-            memcpy(sram_buffer, in_buffer+i, clear_bytes);
+            memcpy(sram_buffer, in_buffer + i, clear_bytes);
         }
 
         // perform crypto operations
@@ -336,7 +335,7 @@ KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
             flash_simple_erase_page((uint32_t)(out_buffer+i));
             flash_simple_write((uint32_t)(out_buffer+i), sram_buffer, len);
         } else {
-            memcpy(out_buffer+i, in_buffer+i, n);
+            memcpy(out_buffer+i, sram_buffer, n);
         }
     }
 
