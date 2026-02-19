@@ -639,7 +639,7 @@ KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid)
 
     // Encrypt file data in user buffer - tag is output parameter
     if (copy_with_transform((uint8_t *)src, (uint8_t *)&k_curr_file,
-                            (uint8_t *)v_key, XFORM_ENC, (uint8_t *)v_tag, 
+                            (uint8_t *)v_key, XFORM_ENC, (uint8_t *)v_tag,
                             (uint8_t *)v_iv, sizeof(file_t), 0, false) < 0)
     {
         goto cleanup_on_error;
@@ -671,20 +671,20 @@ cleanup_on_error:
     // Scrub all sensitive data with memory barrier to prevent optimization
     memset((void *)v_key, 0x00, AESGCM_KEY_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset((void *)v_iv, 0x00, AESGCM_IV_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset((void *)v_tag, 0x00, AESGCM_TAG_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset(&k_curr_file, 0x00, sizeof(file_t));
     __asm__ volatile("" ::: "memory");
-    
+
     // Scrub file header on error path only
     memset(&f_header, 0x00, sizeof(file_header_t));
     __asm__ volatile("" ::: "memory");
-    
+
     return (int)v_result;
 }
 
@@ -793,9 +793,9 @@ KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce)
     // Decrypt received file list data
     // Copy the tag from the response for verification
     memcpy((uint8_t *)v_tag, file_list_transfer->tag, AESGCM_TAG_SIZE);
-    
+
     if (copy_with_transform((uint8_t *)&file_list_transfer->data, (uint8_t *)&k_file_list,
-                            (uint8_t *)v_key, XFORM_DEC, (uint8_t *)v_tag, 
+                            (uint8_t *)v_key, XFORM_DEC, (uint8_t *)v_tag,
                             file_list_transfer->iv, sizeof(list_response_t), 0, false) < 0)
     {
         goto cleanup_on_error;
@@ -820,7 +820,7 @@ KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce)
                 // User has permission - include in filtered list
                 filtered_list.metadata[filtered_list.n_files].slot = k_file_list.metadata[i].slot;
                 filtered_list.metadata[filtered_list.n_files].group_id = k_file_list.metadata[i].group_id;
-                memcpy(filtered_list.metadata[filtered_list.n_files].name, 
+                memcpy(filtered_list.metadata[filtered_list.n_files].name,
                        k_file_list.metadata[i].name, MAX_NAME_SIZE);
                 filtered_list.n_files++;
                 break;
@@ -830,17 +830,17 @@ KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce)
 
     // Copy filtered list back to user buffer in plaintext
     memcpy(file_list_transfer, &filtered_list, sizeof(list_response_t));
-    
+
     v_result = 0;
 
 cleanup_on_error:
     // Scrub all sensitive data with memory barriers to prevent optimization
     memset((void *)v_key, 0x00, AESGCM_KEY_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset((void *)v_tag, 0x00, AESGCM_TAG_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset(&k_file_list, 0x00, sizeof(list_response_t));
     __asm__ volatile("" ::: "memory");
 
@@ -906,7 +906,7 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
 
     // Decrypt local file from storage
     memcpy((uint8_t *)v_dec_tag, f_header.tag, AESGCM_TAG_SIZE);
-    
+
     if (copy_with_transform((uint8_t *)&k_curr_file_b, (uint8_t *)&k_curr_file,
                             (uint8_t *)v_dec_key, XFORM_DEC, (uint8_t *)v_dec_tag,
                             f_header.iv, sizeof(file_t), 0, false) < 0)
@@ -941,22 +941,22 @@ cleanup_on_error:
     // Scrub all sensitive data with memory barriers to prevent optimization
     memset((void *)v_dec_key, 0x00, AESGCM_KEY_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset((void *)v_enc_key, 0x00, AESGCM_KEY_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset((void *)v_dec_tag, 0x00, AESGCM_TAG_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset((void *)v_enc_tag, 0x00, AESGCM_TAG_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset((void *)v_enc_iv, 0x00, AESGCM_IV_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset(&k_curr_file, 0x00, sizeof(file_t));
     __asm__ volatile("" ::: "memory");
-    
+
     memset(&k_curr_file_b, 0x00, sizeof(file_t));
     __asm__ volatile("" ::: "memory");
 
@@ -1006,7 +1006,7 @@ KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req
 
     // Copy the tag from the response for verification
     memcpy((uint8_t *)v_transfer_tag, response->tag, AESGCM_TAG_SIZE);
-    
+
     // Decrypt received file
     if (copy_with_transform((uint8_t *)&response->data, (uint8_t *)&k_curr_file,
                             (uint8_t *)v_transfer_key, XFORM_DEC, (uint8_t *)v_transfer_tag,
@@ -1067,25 +1067,25 @@ cleanup_on_error:
     // Scrub all sensitive data with memory barriers to prevent optimization
     memset((void *)v_transfer_key, 0x00, AESGCM_KEY_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset((void *)v_local_key, 0x00, AESGCM_KEY_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset((void *)v_transfer_tag, 0x00, AESGCM_TAG_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset((void *)v_local_tag, 0x00, AESGCM_TAG_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset((void *)v_local_iv, 0x00, AESGCM_IV_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset(local_uuid, 0x00, AESGCM_TAG_SIZE);
     __asm__ volatile("" ::: "memory");
-    
+
     memset(&k_curr_file, 0x00, sizeof(file_t));
     __asm__ volatile("" ::: "memory");
-    
+
     memset(&k_curr_file_b, 0x00, sizeof(file_t));
     __asm__ volatile("" ::: "memory");
 
