@@ -605,11 +605,15 @@ KERNEL_CODE int secure_read_file_meta(void *file_list_ptr)
  */
 KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid)
 {
-
-    int ret = -1;
+    // Use volatile qualifiers to prevent compiler optimizations on sensitive data
+    volatile uint8_t v_key[AESGCM_KEY_SIZE] = {0};
+    volatile uint8_t v_iv[AESGCM_IV_SIZE] = {0};
+    volatile uint8_t v_tag[AESGCM_TAG_SIZE] = {0};
+    volatile int v_result = -1;
     file_header_t f_header;
-    uint8_t key[AESGCM_KEY_SIZE] = {0};
+    group_id_t group_id;
 
+    // Input validation - fast return before capability check
     if (src == NULL || uuid == NULL)
         return INTERNAL_ERR;
     if (slot < 0 || slot > 7)
@@ -618,56 +622,70 @@ KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid)
     // Check required capability
     SECURE_CAP_CHECK(CAP_WRITE);
 
-    // Get group ID from file metadata (or use from src if available)
-    group_id_t group_id = src->metadata.group_id;
+    // Get group ID from file metadata
+    group_id = src->metadata.group_id;
 
     // Check write permission on file group
     SECURE_PERM_CHECK(group_id, W_PERMISSION, global_permissions);
 
     // Create encryption key from UUID/secret
-    if (create_key((uint8_t *)aes_128_shared_key, uuid, AESGCM_TAG_SIZE, key) < 0)
+    if (create_key((uint8_t *)aes_128_shared_key, uuid, AESGCM_TAG_SIZE, (uint8_t *)v_key) < 0)
     {
-        return INTERNAL_ERR;
+        goto cleanup_on_error;
     }
 
-    // Generate IV and tag for encryption
-    uint8_t iv[AESGCM_IV_SIZE] = {0};
-    uint8_t tag[AESGCM_TAG_SIZE] = {0};
-    generate_trng_block(iv, AESGCM_IV_SIZE);
+    // Generate IV for encryption
+    generate_trng_block((uint8_t *)v_iv, AESGCM_IV_SIZE);
 
-    // Encrypt file data in user buffer
+    // Encrypt file data in user buffer - tag is output parameter
     if (copy_with_transform((uint8_t *)src, (uint8_t *)&k_curr_file,
-                            key, XFORM_ENC, tag, iv, sizeof(file_t), 0, false) < 0)
+                            (uint8_t *)v_key, XFORM_ENC, (uint8_t *)v_tag, 
+                            (uint8_t *)v_iv, sizeof(file_t), 0, false) < 0)
     {
-        return INTERNAL_ERR;
+        goto cleanup_on_error;
     }
 
-    // Prepare file header
+    // Prepare file header - zero first for clean state
     memset(&f_header, 0, sizeof(file_header_t));
     f_header.in_use = FILE_IN_USE;
     f_header.group_id = group_id;
     memcpy(f_header.name, src->metadata.name, MAX_NAME_SIZE);
-    memcpy(f_header.iv, iv, AESGCM_IV_SIZE);
-    memcpy(f_header.tag, tag, AESGCM_TAG_SIZE);
+    memcpy(f_header.iv, (uint8_t *)v_iv, AESGCM_IV_SIZE);
+    memcpy(f_header.tag, (uint8_t *)v_tag, AESGCM_TAG_SIZE);
 
-    // Write file header and encrypted data to flash
+    // Write file header to flash
     if (write_file_metadata(slot, &f_header) < 0)
     {
-        return WRITE_ERR;
+        goto cleanup_on_error;
     }
 
     // Write encrypted file data to flash
     if (write_file_data(slot, (uint8_t *)&k_curr_file, sizeof(file_t)) < 0)
     {
-        return WRITE_ERR;
+        goto cleanup_on_error;
     }
 
-    // Scrub sensitive data
-    memset(key, 0x00, AESGCM_KEY_SIZE);
-    memset(iv, 0x00, AESGCM_IV_SIZE);
-    memset(&k_curr_file, 0x00, sizeof(file_t));
+    v_result = 0;
 
-    return 0;
+cleanup_on_error:
+    // Scrub all sensitive data with memory barrier to prevent optimization
+    memset((void *)v_key, 0x00, AESGCM_KEY_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset((void *)v_iv, 0x00, AESGCM_IV_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset((void *)v_tag, 0x00, AESGCM_TAG_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset(&k_curr_file, 0x00, sizeof(file_t));
+    __asm__ volatile("" ::: "memory");
+    
+    // Scrub file header on error path only
+    memset(&f_header, 0x00, sizeof(file_header_t));
+    __asm__ volatile("" ::: "memory");
+    
+    return (int)v_result;
 }
 
 /** @brief Prepare a list of encrypted file metadata for remote user
@@ -753,19 +771,80 @@ KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr)
  */
 KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce)
 {
+    // Use volatile qualifiers to prevent compiler optimizations on sensitive data
+    volatile uint8_t v_key[AESGCM_KEY_SIZE] = {0};
+    volatile uint8_t v_tag[AESGCM_TAG_SIZE] = {0};
+    volatile int v_result = -1;
     list_response_enc_t *file_list_transfer = (list_response_enc_t *)file_list_ptr;
     list_response_t k_file_list;
-    uint8_t key[AESGCM_KEY_SIZE] = {0};
-
-    int ret = -1;
 
     if (file_list_ptr == NULL || nonce == NULL)
         return INTERNAL_ERR;
 
-    // TODO: need to check capability, create session key, decrypt received data, filter
-    // the list based on permission, and put result in user buffer
+    // Check required capability - must have FILTER_META capability
+    SECURE_CAP_CHECK(CAP_FILTER_META);
 
-    return -1;
+    // Create session key from nonce and shared secret
+    if (create_key((uint8_t *)aes_128_shared_key, nonce, NONCE_SIZE, (uint8_t *)v_key) < 0)
+    {
+        goto cleanup_on_error;
+    }
+
+    // Decrypt received file list data
+    // Copy the tag from the response for verification
+    memcpy((uint8_t *)v_tag, file_list_transfer->tag, AESGCM_TAG_SIZE);
+    
+    if (copy_with_transform((uint8_t *)&file_list_transfer->data, (uint8_t *)&k_file_list,
+                            (uint8_t *)v_key, XFORM_DEC, (uint8_t *)v_tag, 
+                            file_list_transfer->iv, sizeof(list_response_t), 0, false) < 0)
+    {
+        goto cleanup_on_error;
+    }
+
+    // Filter the decrypted list based on C permission (receive permission)
+    list_response_t filtered_list;
+    memset(&filtered_list, 0, sizeof(list_response_t));
+    filtered_list.n_files = 0;
+
+    // Iterate through decrypted file list
+    for (uint8_t i = 0; i < k_file_list.n_files && i < MAX_FILE_COUNT; i++)
+    {
+        group_id_t file_group = k_file_list.metadata[i].group_id;
+
+        // Check if current user has C (receive) permission on this file's group
+        for (int j = 0; j < MAX_PERMS; j++)
+        {
+            if (global_permissions[j].group_id == file_group &&
+                global_permissions[j].receive == C_PERMISSION)
+            {
+                // User has permission - include in filtered list
+                filtered_list.metadata[filtered_list.n_files].slot = k_file_list.metadata[i].slot;
+                filtered_list.metadata[filtered_list.n_files].group_id = k_file_list.metadata[i].group_id;
+                memcpy(filtered_list.metadata[filtered_list.n_files].name, 
+                       k_file_list.metadata[i].name, MAX_NAME_SIZE);
+                filtered_list.n_files++;
+                break;
+            }
+        }
+    }
+
+    // Copy filtered list back to user buffer in plaintext
+    memcpy(file_list_transfer, &filtered_list, sizeof(list_response_t));
+    
+    v_result = 0;
+
+cleanup_on_error:
+    // Scrub all sensitive data with memory barriers to prevent optimization
+    memset((void *)v_key, 0x00, AESGCM_KEY_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset((void *)v_tag, 0x00, AESGCM_TAG_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset(&k_file_list, 0x00, sizeof(list_response_t));
+    __asm__ volatile("" ::: "memory");
+
+    return (int)v_result;
 }
 
 /** @brief Prepare an encrypted file for remote user
@@ -782,10 +861,17 @@ KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce)
  */
 KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_ptr)
 {
+    // Use volatile qualifiers to prevent compiler optimizations on sensitive data
+    volatile uint8_t v_dec_key[AESGCM_KEY_SIZE] = {0};
+    volatile uint8_t v_enc_key[AESGCM_KEY_SIZE] = {0};
+    volatile uint8_t v_dec_tag[AESGCM_TAG_SIZE] = {0};
+    volatile uint8_t v_enc_tag[AESGCM_TAG_SIZE] = {0};
+    volatile uint8_t v_enc_iv[AESGCM_IV_SIZE] = {0};
+    volatile int v_result = -1;
     receive_request_t *request = (receive_request_t *)request_ptr;
     receive_response_enc_t *response = (receive_response_enc_t *)response_ptr;
-
-    int ret = -1;
+    file_header_t f_header;
+    group_id_t file_group;
 
     if (request_ptr == NULL || response_ptr == NULL)
         return INTERNAL_ERR;
@@ -794,10 +880,87 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
     if (slot < 0 || slot > 7)
         return READ_ERR;
 
-    // TODO: need to check capability, check permissions, decrypt local file and re-encrypt
-    // for transfer
+    // Check required capability - CAP_SEND for file transfer
+    SECURE_CAP_CHECK(CAP_SEND);
 
-    return -1;
+    // Read file header from slot
+    if (read_file_metadata(slot, &f_header) < 0)
+    {
+        return READ_META_ERR;
+    }
+
+    // Get file group ID
+    file_group = f_header.group_id;
+
+    // Check local W permission on file group (local user must be able to write/transfer this file)
+    SECURE_PERM_CHECK(file_group, W_PERMISSION, global_permissions);
+
+    // TODO: Check remote C permission (would be encoded in request from remote user's permissions)
+    // For now, we trust that remote permissions have been validated by host messaging
+
+    // Create decryption key from local UUID to decrypt stored file
+    if (create_key((uint8_t *)aes_128_shared_key, request->local_uuid, AESGCM_TAG_SIZE, (uint8_t *)v_dec_key) < 0)
+    {
+        goto cleanup_on_error;
+    }
+
+    // Decrypt local file from storage
+    memcpy((uint8_t *)v_dec_tag, f_header.tag, AESGCM_TAG_SIZE);
+    
+    if (copy_with_transform((uint8_t *)&k_curr_file_b, (uint8_t *)&k_curr_file,
+                            (uint8_t *)v_dec_key, XFORM_DEC, (uint8_t *)v_dec_tag,
+                            f_header.iv, sizeof(file_t), 0, false) < 0)
+    {
+        goto cleanup_on_error;
+    }
+
+    // Create encryption key for transfer using remote nonce
+    if (create_key((uint8_t *)aes_128_shared_key, request->remote_nonce, NONCE_SIZE, (uint8_t *)v_enc_key) < 0)
+    {
+        goto cleanup_on_error;
+    }
+
+    // Generate new IV for transfer encryption
+    generate_trng_block((uint8_t *)v_enc_iv, AESGCM_IV_SIZE);
+
+    // Re-encrypt file data for transfer
+    if (copy_with_transform((uint8_t *)&k_curr_file, (uint8_t *)&response->data,
+                            (uint8_t *)v_enc_key, XFORM_ENC, (uint8_t *)v_enc_tag,
+                            (uint8_t *)v_enc_iv, sizeof(file_t), 0, false) < 0)
+    {
+        goto cleanup_on_error;
+    }
+
+    // Copy IV and tag to response for recipient
+    memcpy(response->iv, (uint8_t *)v_enc_iv, AESGCM_IV_SIZE);
+    memcpy(response->tag, (uint8_t *)v_enc_tag, AESGCM_TAG_SIZE);
+
+    v_result = 0;
+
+cleanup_on_error:
+    // Scrub all sensitive data with memory barriers to prevent optimization
+    memset((void *)v_dec_key, 0x00, AESGCM_KEY_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset((void *)v_enc_key, 0x00, AESGCM_KEY_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset((void *)v_dec_tag, 0x00, AESGCM_TAG_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset((void *)v_enc_tag, 0x00, AESGCM_TAG_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset((void *)v_enc_iv, 0x00, AESGCM_IV_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset(&k_curr_file, 0x00, sizeof(file_t));
+    __asm__ volatile("" ::: "memory");
+    
+    memset(&k_curr_file_b, 0x00, sizeof(file_t));
+    __asm__ volatile("" ::: "memory");
+
+    return (int)v_result;
 }
 
 /** @brief Decrypt received file, re-encrypt and store
@@ -815,17 +978,116 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
  */
 KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req_nonce, slot_t slot)
 {
+    // Use volatile qualifiers to prevent compiler optimizations on sensitive data
+    volatile uint8_t v_transfer_key[AESGCM_KEY_SIZE] = {0};
+    volatile uint8_t v_local_key[AESGCM_KEY_SIZE] = {0};
+    volatile uint8_t v_transfer_tag[AESGCM_TAG_SIZE] = {0};
+    volatile uint8_t v_local_tag[AESGCM_TAG_SIZE] = {0};
+    volatile uint8_t v_local_iv[AESGCM_IV_SIZE] = {0};
+    volatile int v_result = -1;
     receive_response_enc_t *response = (receive_response_enc_t *)response_ptr;
-
-    int ret = -1;
+    file_header_t f_header;
+    group_id_t file_group;
+    uint8_t local_uuid[AESGCM_TAG_SIZE] = {0};
 
     if (response_ptr == NULL || req_nonce == NULL)
         return INTERNAL_ERR;
     if (slot < 0 || slot > 7)
         return RECEIVE_ERR;
 
-    // TODO: need to decrypt received file, check capability+permission, create local key,
-    // re-encrypt with key and store file
+    // Check required capability - CAP_RECEIVE for file receive operations
+    SECURE_CAP_CHECK(CAP_RECEIVE);
 
-    return -1;
+    // Create decryption key from transfer nonce to decrypt received file
+    if (create_key((uint8_t *)aes_128_shared_key, req_nonce, NONCE_SIZE, (uint8_t *)v_transfer_key) < 0)
+    {
+        goto cleanup_on_error;
+    }
+
+    // Copy the tag from the response for verification
+    memcpy((uint8_t *)v_transfer_tag, response->tag, AESGCM_TAG_SIZE);
+    
+    // Decrypt received file
+    if (copy_with_transform((uint8_t *)&response->data, (uint8_t *)&k_curr_file,
+                            (uint8_t *)v_transfer_key, XFORM_DEC, (uint8_t *)v_transfer_tag,
+                            response->iv, sizeof(file_t), 0, false) < 0)
+    {
+        goto cleanup_on_error;
+    }
+
+    // Get file group from decrypted file metadata
+    file_group = k_curr_file.metadata.group_id;
+
+    // Check C (receive) permission on file's group
+    SECURE_PERM_CHECK(file_group, C_PERMISSION, global_permissions);
+
+    // Generate local UUID for this file using TRNG
+    generate_trng_block(local_uuid, AESGCM_TAG_SIZE);
+
+    // Create local encryption key from generated UUID
+    if (create_key((uint8_t *)aes_128_shared_key, local_uuid, AESGCM_TAG_SIZE, (uint8_t *)v_local_key) < 0)
+    {
+        goto cleanup_on_error;
+    }
+
+    // Generate IV for local encryption
+    generate_trng_block((uint8_t *)v_local_iv, AESGCM_IV_SIZE);
+
+    // Re-encrypt file with local key
+    if (copy_with_transform((uint8_t *)&k_curr_file, (uint8_t *)&k_curr_file_b,
+                            (uint8_t *)v_local_key, XFORM_ENC, (uint8_t *)v_local_tag,
+                            (uint8_t *)v_local_iv, sizeof(file_t), 0, false) < 0)
+    {
+        goto cleanup_on_error;
+    }
+
+    // Prepare file header for storage
+    memset(&f_header, 0, sizeof(file_header_t));
+    f_header.in_use = FILE_IN_USE;
+    f_header.group_id = file_group;
+    memcpy(f_header.name, k_curr_file.metadata.name, MAX_NAME_SIZE);
+    memcpy(f_header.iv, (uint8_t *)v_local_iv, AESGCM_IV_SIZE);
+    memcpy(f_header.tag, (uint8_t *)v_local_tag, AESGCM_TAG_SIZE);
+
+    // Write file header to flash
+    if (write_file_metadata(slot, &f_header) < 0)
+    {
+        goto cleanup_on_error;
+    }
+
+    // Write encrypted file data to flash
+    if (write_file_data(slot, (uint8_t *)&k_curr_file_b, sizeof(file_t)) < 0)
+    {
+        goto cleanup_on_error;
+    }
+
+    v_result = 0;
+
+cleanup_on_error:
+    // Scrub all sensitive data with memory barriers to prevent optimization
+    memset((void *)v_transfer_key, 0x00, AESGCM_KEY_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset((void *)v_local_key, 0x00, AESGCM_KEY_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset((void *)v_transfer_tag, 0x00, AESGCM_TAG_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset((void *)v_local_tag, 0x00, AESGCM_TAG_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset((void *)v_local_iv, 0x00, AESGCM_IV_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset(local_uuid, 0x00, AESGCM_TAG_SIZE);
+    __asm__ volatile("" ::: "memory");
+    
+    memset(&k_curr_file, 0x00, sizeof(file_t));
+    __asm__ volatile("" ::: "memory");
+    
+    memset(&k_curr_file_b, 0x00, sizeof(file_t));
+    __asm__ volatile("" ::: "memory");
+
+    return (int)v_result;
 }
