@@ -58,7 +58,7 @@ typedef struct {
 #define AESGCM_IV_SIZE  12
 #define NONCE_SIZE      16
 #define HMAC_SIZE       32
-#define WOLFSSL_STATIC_MEM_SIZE 256
+#define WOLFSSL_STATIC_MEM_SIZE 512
 
 
 // Numeric values assigned to different capabilities
@@ -69,7 +69,9 @@ typedef struct {
 #define CAP_RECEIVE     0x5A     // the capability to write a file from transfer
 #define CAP_FILTER_META 0x66     // the capability to filter file metadata
 
-
+// Context labels
+#define LOCAL_LABEL_FILE    "local_file"
+#define TRANSFER_LABEL_FILE "transfer_file"
 
 /** @brief Initialize security related structures
 */
