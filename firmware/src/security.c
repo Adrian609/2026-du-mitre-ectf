@@ -5,7 +5,7 @@
  * @date 2026
  *
  */
- 
+
 #define SECRETS_DEFINE
 #include "secrets.h"
 
@@ -31,67 +31,89 @@
 
 extern filesystem_entry_t FILE_ALLOCATION_TABLE[MAX_FILE_COUNT]; // from filesystem.c
 
-extern uint32_t prng_counter;  // from simple_random.c
-
+extern uint32_t prng_counter; // from simple_random.c
 
 // Checks if two values are same but using multiple steps
 // NOTE: The function where this is placed returns with provided
 // error code (err_code) on failure
-#define EQ_CHECK_BARRIER(actual, expected, err_code) do { \
-    volatile uint32_t _failed = 0x5A5A5A5A; \
-    volatile unsigned long long _a = (volatile unsigned long long)((actual)); \
-    volatile unsigned long long _e = (volatile unsigned long long)((expected)); \
-    if (_a != _e) {_failed = 0xA5A5A5A5; return((err_code));} \
-    if (_a == 0x0000000000000000ull) {_failed = 0xA5A5A5A5; return((err_code));} \
-    if (_a == 0xFFFFFFFFFFFFFFFFull) {_failed = 0xA5A5A5A5;  return((err_code));} \
-    if ((_a ^ _e) != 0x0000000000000000ull) {_failed = 0xA5A5A5A5;return((err_code));} \
-    if (_failed == 0xA5A5A5A5) {return((err_code));} \
-} while(0)
-
+#define EQ_CHECK_BARRIER(actual, expected, err_code)                                \
+    do                                                                              \
+    {                                                                               \
+        volatile uint32_t _failed = 0x5A5A5A5A;                                     \
+        volatile unsigned long long _a = (volatile unsigned long long)((actual));   \
+        volatile unsigned long long _e = (volatile unsigned long long)((expected)); \
+        if (_a != _e)                                                               \
+        {                                                                           \
+            _failed = 0xA5A5A5A5;                                                   \
+            return ((err_code));                                                    \
+        }                                                                           \
+        if (_a == 0x0000000000000000ull)                                            \
+        {                                                                           \
+            _failed = 0xA5A5A5A5;                                                   \
+            return ((err_code));                                                    \
+        }                                                                           \
+        if (_a == 0xFFFFFFFFFFFFFFFFull)                                            \
+        {                                                                           \
+            _failed = 0xA5A5A5A5;                                                   \
+            return ((err_code));                                                    \
+        }                                                                           \
+        if ((_a ^ _e) != 0x0000000000000000ull)                                     \
+        {                                                                           \
+            _failed = 0xA5A5A5A5;                                                   \
+            return ((err_code));                                                    \
+        }                                                                           \
+        if (_failed == 0xA5A5A5A5)                                                  \
+        {                                                                           \
+            return ((err_code));                                                    \
+        }                                                                           \
+    } while (0)
 
 /*
  * A capability is about intent. It is given during pin check based on the
  * command. CMD_TO_CAP_MAP is a lookup table of the capability given for a
  * command. Functions require that a certain capability is active for them
  * to proceed. Functions also require that certain permissions are present
- * for file operations. We write these as two separate macros for reuse. 
+ * for file operations. We write these as two separate macros for reuse.
  *
  * NOTE: An active capability is one-time use
  */
- 
+
 // Checks if required capability (req_cap) is equal to active capability
 // NOTE: active capability is erase irrespective of outcome
-#define SECURE_CAP_CHECK(req_cap) do { \
-    volatile uint8_t _actual = active_cap; \
-    active_cap = 0x00; \
-    __asm__ volatile("" ::: "memory"); \
-    EQ_CHECK_BARRIER(_actual, req_cap, PERM_ERR); \
-    active_cap = 0x00; \
-    _actual = 0x00; \
-    __asm__ volatile("" ::: "memory"); \
-} while(0)
-    
-    
-// Checks if a permission (req_perm) is present for a given group (group id) 
+#define SECURE_CAP_CHECK(req_cap)                     \
+    do                                                \
+    {                                                 \
+        volatile uint8_t _actual = active_cap;        \
+        active_cap = 0x00;                            \
+        __asm__ volatile("" ::: "memory");            \
+        EQ_CHECK_BARRIER(_actual, req_cap, PERM_ERR); \
+        active_cap = 0x00;                            \
+        _actual = 0x00;                               \
+        __asm__ volatile("" ::: "memory");            \
+    } while (0)
+
+// Checks if a permission (req_perm) is present for a given group (group id)
 // in a permission structure (perms_structure)
 // NOTE: only one of mr, mw or mc will be zero
-#define SECURE_PERM_CHECK(gid, req_perm, perms_structure) do { \
-    uint8_t volatile _have_perm = X_PERMISSION;\
-    for (int __i=0; __i < MAX_PERMS; __i++) { \
-         if ((perms_structure)[__i].group_id == (gid)) { \
-             uint8_t volatile _mr = !((perms_structure)[__i].read ^ (req_perm)); \
-             uint8_t volatile _mw = !((perms_structure)[__i].write ^ (req_perm)); \
-             uint8_t volatile _mc = !((perms_structure)[__i].receive ^ (req_perm)); \
-             _have_perm = _mr * (perms_structure)[__i].read + \
-                          _mw * (perms_structure)[__i].write + \
-                          _mc * (perms_structure)[__i].receive; \
-             break;\
-         } \
-    } \
-    EQ_CHECK_BARRIER(_have_perm, req_perm, PERM_ERR); \
-} while(0)
-
-
+#define SECURE_PERM_CHECK(gid, req_perm, perms_structure)                              \
+    do                                                                                 \
+    {                                                                                  \
+        uint8_t volatile _have_perm = X_PERMISSION;                                    \
+        for (int __i = 0; __i < MAX_PERMS; __i++)                                      \
+        {                                                                              \
+            if ((perms_structure)[__i].group_id == (gid))                              \
+            {                                                                          \
+                uint8_t volatile _mr = !((perms_structure)[__i].read ^ (req_perm));    \
+                uint8_t volatile _mw = !((perms_structure)[__i].write ^ (req_perm));   \
+                uint8_t volatile _mc = !((perms_structure)[__i].receive ^ (req_perm)); \
+                _have_perm = _mr * (perms_structure)[__i].read +                       \
+                             _mw * (perms_structure)[__i].write +                      \
+                             _mc * (perms_structure)[__i].receive;                     \
+                break;                                                                 \
+            }                                                                          \
+        }                                                                              \
+        EQ_CHECK_BARRIER(_have_perm, req_perm, PERM_ERR);                              \
+    } while (0)
 
 // The internal capability state (set after pin check and reset
 // by command functions)
@@ -99,12 +121,12 @@ KERNEL_DATA volatile uint8_t active_cap = 0x00;
 
 // Lookup table to map a command to a capability
 KERNEL_CONST uint8_t CMD_TO_CAP_MAP[256] = {
-    [LIST_MSG]        = CAP_READ_META,   // 'L'
-    [READ_MSG]        = CAP_READ,        // 'R'
-    [WRITE_MSG]       = CAP_WRITE,       // 'W'
-    [RECEIVE_MSG]     = CAP_RECEIVE,     // 'C'
+    [LIST_MSG] = CAP_READ_META,          // 'L'
+    [READ_MSG] = CAP_READ,               // 'R'
+    [WRITE_MSG] = CAP_WRITE,             // 'W'
+    [RECEIVE_MSG] = CAP_RECEIVE,         // 'C'
     [INTERROGATE_MSG] = CAP_FILTER_META, // 'I'
-    [LISTEN_MSG]      = CAP_SEND,        // 'N'
+    [LISTEN_MSG] = CAP_SEND,             // 'N'
 };
 
 // Kernel scratchpad for internal operations
@@ -122,10 +144,8 @@ KERNEL_DATA static Aes e_gcm;
 KERNEL_DATA static Aes d_gcm;
 KERNEL_DATA __attribute__((aligned(4))) uint8_t wolfssl_e_heap[WOLFSSL_STATIC_MEM_SIZE];
 KERNEL_DATA __attribute__((aligned(4))) uint8_t wolfssl_d_heap[WOLFSSL_STATIC_MEM_SIZE];
-KERNEL_DATA WOLFSSL_HEAP_HINT* p_e_hint = NULL;
-KERNEL_DATA WOLFSSL_HEAP_HINT* p_d_hint = NULL; 
-
-
+KERNEL_DATA WOLFSSL_HEAP_HINT *p_e_hint = NULL;
+KERNEL_DATA WOLFSSL_HEAP_HINT *p_d_hint = NULL;
 
 /////////////////////////////////////////////////////////////////////////
 //
@@ -133,62 +153,65 @@ KERNEL_DATA WOLFSSL_HEAP_HINT* p_d_hint = NULL;
 //
 /////////////////////////////////////////////////////////////////////////
 
-
 /** @brief Initialize security related structures
-*/
-KERNEL_CODE void init_security() {
-    
-    // Init encryption engine        
+ */
+KERNEL_CODE void init_security()
+{
+
+    // Init encryption engine
     memset(&e_gcm, 0, sizeof(Aes));
     memset(wolfssl_e_heap, 0, WOLFSSL_STATIC_MEM_SIZE);
-    
-    if (wc_LoadStaticMemory(&p_e_hint, wolfssl_e_heap, WOLFSSL_STATIC_MEM_SIZE, 
-                            WOLFMEM_GENERAL, 0) < 0) {
+
+    if (wc_LoadStaticMemory(&p_e_hint, wolfssl_e_heap, WOLFSSL_STATIC_MEM_SIZE,
+                            WOLFMEM_GENERAL, 0) < 0)
+    {
         print_debug("Encrypt LoadStaticMemory failed\n");
     }
-    
-    if (wc_AesInit(&e_gcm, p_e_hint, INVALID_DEVID) < 0) {
+
+    if (wc_AesInit(&e_gcm, p_e_hint, INVALID_DEVID) < 0)
+    {
         print_debug("Encrypt AesInit failed\n");
     }
-    
+
     // Init decryption engine
     memset(&d_gcm, 0, sizeof(Aes));
     memset(wolfssl_d_heap, 0, WOLFSSL_STATIC_MEM_SIZE);
-    
-    if (wc_LoadStaticMemory(&p_d_hint, wolfssl_d_heap, WOLFSSL_STATIC_MEM_SIZE, 
-                            WOLFMEM_GENERAL, 0) < 0) {
+
+    if (wc_LoadStaticMemory(&p_d_hint, wolfssl_d_heap, WOLFSSL_STATIC_MEM_SIZE,
+                            WOLFMEM_GENERAL, 0) < 0)
+    {
         print_debug("Decrypt LoadStaticMemory failed\n");
     }
-    
-    if (wc_AesInit(&d_gcm, p_d_hint, INVALID_DEVID) < 0) {
+
+    if (wc_AesInit(&d_gcm, p_d_hint, INVALID_DEVID) < 0)
+    {
         print_debug("Decrypt AesInit failed\n");
     }
 
     // Init prng counter
-    generate_trng_block((uint8_t *)&prng_counter, 4);       
-    
-    // Copy permission structure to user accessible placeholder    
-    memcpy((void *)global_permissions_u, (void *)global_permissions, 
-                                         sizeof(group_permission_t) * MAX_PERMS);
-    
+    generate_trng_block((uint8_t *)&prng_counter, 4);
+
+    // Copy permission structure to user accessible placeholder
+    memcpy((void *)global_permissions_u, (void *)global_permissions,
+           sizeof(group_permission_t) * MAX_PERMS);
+
     // Compute HMAC on global permission structure and place it in user accessible memory
     Hmac hmac;
     wc_HmacSetKey(&hmac, WC_SHA256, (void *)aes_128_shared_key, AESGCM_KEY_SIZE);
     wc_HmacUpdate(&hmac, (void *)global_permissions, sizeof(group_permission_t) * MAX_PERMS);
     wc_HmacFinal(&hmac, (void *)global_permissions_sig);
-        
 }
 
-
 /** @brief Concatenate bytes and store in an output buffer
- * 
- * @param out: the output buffer 
+ *
+ * @param out: the output buffer
  * @param ...: variable list of arguments of the sequence
- *             uint8_t *bytes1, uint32_t bytes1_len, uint8_t *bytes2, 
+ *             uint8_t *bytes1, uint32_t bytes1_len, uint8_t *bytes2,
  *             uint32_t bytes2_len, ..., NULL
  *
-*/
-KERNEL_CODE void join_bytes(uint8_t *out, ...) {
+ */
+KERNEL_CODE void join_bytes(uint8_t *out, ...)
+{
     va_list args;
     va_start(args, out);
 
@@ -196,18 +219,19 @@ KERNEL_CODE void join_bytes(uint8_t *out, ...) {
     uint8_t *next_bytes;
 
     // Iterate through pairs until a NULL pointer
-    while ((next_bytes = va_arg(args, uint8_t*)) != NULL) {
+    while ((next_bytes = va_arg(args, uint8_t *)) != NULL)
+    {
         uint32_t next_len = va_arg(args, uint32_t);
-        
-        if (next_len > 0) {
-            memcpy(out+len_sum, next_bytes, next_len);
+
+        if (next_len > 0)
+        {
+            memcpy(out + len_sum, next_bytes, next_len);
             len_sum += next_len;
         }
     }
 
     va_end(args);
 }
-
 
 /** @brief Erase pages in the flash memory scratchpad
  *
@@ -218,28 +242,33 @@ KERNEL_CODE void join_bytes(uint8_t *out, ...) {
  *
  * @note although size is an input, erases happen in multiples of flash page size
  *
-*/
-KERNEL_CODE int erase_scratchpad_pages(uint32_t address, uint32_t size) {
+ */
+KERNEL_CODE int erase_scratchpad_pages(uint32_t address, uint32_t size)
+{
 
     // Address must be page aligned
-	if (address % FLASH_PAGE_SIZE != 0) return -1; 
-	
-	// Address must be in kernel staging area
-	if (address < START_KERNEL_STAGE) return -1; 
-	if (size > (END_KERNEL_STAGE - address + 1)) return -1;
+    if (address % FLASH_PAGE_SIZE != 0)
+        return -1;
 
-		
+    // Address must be in kernel staging area
+    if (address < START_KERNEL_STAGE)
+        return -1;
+    if (size > (END_KERNEL_STAGE - address + 1))
+        return -1;
+
     // Calculate number of pages based on size
-	uint32_t num_pages = (size + (FLASH_PAGE_SIZE - 1)) / FLASH_PAGE_SIZE;
+    uint32_t num_pages = (size + (FLASH_PAGE_SIZE - 1)) / FLASH_PAGE_SIZE;
 
     // Erase the pages
-	for (uint32_t p = 0; p < num_pages; p++) {
-		uint32_t page_addr = address + (p * FLASH_PAGE_SIZE);
-		
-		if (flash_simple_erase_page(page_addr) < 0) return -1;
-	}
+    for (uint32_t p = 0; p < num_pages; p++)
+    {
+        uint32_t page_addr = address + (p * FLASH_PAGE_SIZE);
 
-	return 0;
+        if (flash_simple_erase_page(page_addr) < 0)
+            return -1;
+    }
+
+    return 0;
 }
 
 /** @brief  Copy data from in to out while performing encrypt/decrypt
@@ -248,11 +277,11 @@ KERNEL_CODE int erase_scratchpad_pages(uint32_t address, uint32_t size) {
  * @param out_buffer: output_buffer
  * @param key: encryption/decryption key
  * @param mode: XFORM_ENC (encrypt) or XFORM_DEC (decrypt)
- * @param tag: tag (encrypt write tag, decrypt uses provided value to 
+ * @param tag: tag (encrypt write tag, decrypt uses provided value to
  *             verify integrity)
  * @param iv: iv (encrypt writes new iv, decrypt uses provided value)
  * @param len: data length
- * @param clear_offset: number of bytes from in_buffer that should be 
+ * @param clear_offset: number of bytes from in_buffer that should be
  *                      plainly copied from in to out
  * @param is_dest_flash: boolean saying if out_buffer is in flash
  *
@@ -261,53 +290,71 @@ KERNEL_CODE int erase_scratchpad_pages(uint32_t address, uint32_t size) {
  *       tag size is assumed to be AESGCM_TAG_SIZE, iv size is assumed to
  *       be AESGCM_IV_SIZE
  *
-*/
-KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer, 
-                                uint8_t *key, xform_mode_t mode,
-                                uint8_t *tag, uint8_t *iv,
-                                uint32_t len, uint32_t clear_offset,
-                                bool is_dest_flash) {
+ */
+KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
+                                    uint8_t *key, xform_mode_t mode,
+                                    uint8_t *tag, uint8_t *iv,
+                                    uint32_t len, uint32_t clear_offset,
+                                    bool is_dest_flash)
+{
 
     // validate parameters
-    if(in_buffer == NULL || out_buffer == NULL || key == NULL || tag == NULL || iv == NULL) return INTERNAL_ERR;
-    if(mode != XFORM_ENC && mode != XFORM_DEC) return INTERNAL_ERR;
+    if (in_buffer == NULL || out_buffer == NULL || key == NULL || tag == NULL || iv == NULL)
+        return INTERNAL_ERR;
+    if (mode != XFORM_ENC && mode != XFORM_DEC)
+        return INTERNAL_ERR;
 
     // clamp clear_offset to len
-    if(clear_offset > len) clear_offset = len;
+    if (clear_offset > len)
+        clear_offset = len;
 
     // crypto init, if any
-    if (mode == XFORM_ENC) {
+    if (mode == XFORM_ENC)
+    {
         generate_random_bytes(iv, AESGCM_IV_SIZE);
         int ret = wc_AesGcmEncryptInit(&e_gcm, key, AESGCM_KEY_SIZE, iv, AESGCM_IV_SIZE);
-        if(ret < 0) return AES_ENCRYPT_ERR;
-    } else if (mode == XFORM_DEC) {
+        if (ret < 0)
+            return AES_ENCRYPT_ERR;
+    }
+    else if (mode == XFORM_DEC)
+    {
         int ret = wc_AesGcmDecryptInit(&d_gcm, key, AESGCM_KEY_SIZE, iv, AESGCM_IV_SIZE);
-        if(ret < 0) return AES_DECRYPT_ERR;
+        if (ret < 0)
+            return AES_DECRYPT_ERR;
     }
 
-    // initialize buffer with zeroes 
-	uint8_t sram_buffer[FLASH_PAGE_SIZE] = {0};
+    // initialize buffer with zeroes
+    uint8_t sram_buffer[FLASH_PAGE_SIZE] = {0};
 
-    for(int i = 0; i < len; i += FLASH_PAGE_SIZE) {
+    for (int i = 0; i < len; i += FLASH_PAGE_SIZE)
+    {
 
         // clear sram_buffer
         memset(sram_buffer, 0x00, FLASH_PAGE_SIZE);
 
-        // figure out how many bytes to copy 
+        // figure out how many bytes to copy
         int n;
-        if(i + FLASH_PAGE_SIZE < len) {
+        if (i + FLASH_PAGE_SIZE < len)
+        {
             n = FLASH_PAGE_SIZE;
-        } else {
+        }
+        else
+        {
             n = len - i;
         }
 
         // how many bytes in this chunk are clear
         int clear_bytes = 0;
-        if(clear_offset <= i) {
+        if (clear_offset <= i)
+        {
             clear_bytes = 0;
-        } else if(clear_offset >= i + n) {
+        }
+        else if (clear_offset >= i + n)
+        {
             clear_bytes = n;
-        } else {
+        }
+        else
+        {
             clear_bytes = clear_offset - i;
         }
 
@@ -315,44 +362,59 @@ KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
         int remaining_bytes = n - clear_bytes;
 
         // copy clear bytes
-        if(clear_bytes > 0) {
+        if (clear_bytes > 0)
+        {
             memcpy(sram_buffer, in_buffer + i, clear_bytes);
         }
 
         // perform crypto operations
-        if(remaining_bytes > 0) {
-            if (mode == XFORM_ENC) {
+        if (remaining_bytes > 0)
+        {
+            if (mode == XFORM_ENC)
+            {
                 int ret = wc_AesGcmEncryptUpdate(&e_gcm, sram_buffer + clear_bytes, in_buffer + i + clear_bytes, remaining_bytes, NULL, 0);
-                if(ret < 0) return AES_ENCRYPT_ERR;
-            } else if (mode == XFORM_DEC) {
+                if (ret < 0)
+                    return AES_ENCRYPT_ERR;
+            }
+            else if (mode == XFORM_DEC)
+            {
                 int ret = wc_AesGcmDecryptUpdate(&d_gcm, sram_buffer + clear_bytes, in_buffer + i + clear_bytes, remaining_bytes, NULL, 0);
-                if(ret < 0) return AES_DECRYPT_ERR;
+                if (ret < 0)
+                    return AES_DECRYPT_ERR;
             }
         }
 
         // write the page
-        if(is_dest_flash) {
-            flash_simple_erase_page((uint32_t)(out_buffer+i));
-            flash_simple_write((uint32_t)(out_buffer+i), sram_buffer, len);
-        } else {
-            memcpy(out_buffer+i, sram_buffer, n);
+        if (is_dest_flash)
+        {
+            flash_simple_erase_page((uint32_t)(out_buffer + i));
+            flash_simple_write((uint32_t)(out_buffer + i), sram_buffer, len);
+        }
+        else
+        {
+            memcpy(out_buffer + i, sram_buffer, n);
         }
     }
 
     // ensure sram memory is cleared
     memset(sram_buffer, 0x00, FLASH_PAGE_SIZE);
-    __asm__ volatile("" ::: "memory"); \
+    __asm__ volatile("" ::: "memory");
 
     // finalize encryption or verify decryption
-    if (mode == XFORM_ENC) {
+    if (mode == XFORM_ENC)
+    {
         int ret = wc_AesGcmEncryptFinal(&e_gcm, tag, AESGCM_TAG_SIZE);
-        if(ret < 0) return AES_ENCRYPT_ERR;
-    } else if (mode == XFORM_DEC) {
+        if (ret < 0)
+            return AES_ENCRYPT_ERR;
+    }
+    else if (mode == XFORM_DEC)
+    {
         int ret = wc_AesGcmDecryptFinal(&d_gcm, tag, AESGCM_TAG_SIZE);
-        if(ret < 0) return AES_TAG_ERR;
+        if (ret < 0)
+            return AES_TAG_ERR;
     }
 
-	return 0;
+    return 0;
 }
 
 /** @brief Derive a key (max 256 bit) using HMAC-SHA256
@@ -361,41 +423,50 @@ KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
  * @param nonce: the bytes to use as nonce in key derivation
  * @param nonce_len: size of nonce
  * @param key: buffer for output key (size if AESGCM_KEY_SIZE, 128 bit default)
- * 
+ *
  * @return 0 on success else -1
  *
-*/
-KERNEL_CODE int create_key(uint8_t *secret, uint8_t *nonce, uint32_t nonce_len, uint8_t *key) {
+ */
+KERNEL_CODE int create_key(uint8_t *secret, uint8_t *nonce, uint32_t nonce_len, uint8_t *key)
+{
     int ret = -1;
 
     // KDF(secret_type, nonce_data) = HMAC-SHA256(AES_SHARED_KEY, secret_type || nonce_data)
     //
     // Validate inputs
-    if (key == NULL || secret == NULL || nonce == NULL) return INTERNAL_ERR;
-    if (nonce_len <= 0 || AESGCM_KEY_SIZE <= 0) return INTERNAL_ERR;
-    if (nonce_len > 0 && nonce == NULL) return INTERNAL_ERR;
-    if (AESGCM_KEY_SIZE > HMAC_SIZE) return INTERNAL_ERR;
+    if (key == NULL || secret == NULL || nonce == NULL)
+        return INTERNAL_ERR;
+    if (nonce_len <= 0 || AESGCM_KEY_SIZE <= 0)
+        return INTERNAL_ERR;
+    if (nonce_len > 0 && nonce == NULL)
+        return INTERNAL_ERR;
+    if (AESGCM_KEY_SIZE > HMAC_SIZE)
+        return INTERNAL_ERR;
 
     // Initialize hmac
     Hmac h;
     uint8_t digest[HMAC_SIZE]; // SHA-256 output size
     ret = wc_HmacInit(&h, NULL, INVALID_DEVID);
-    if (ret != 0) return INTERNAL_ERR;
+    if (ret != 0)
+        return INTERNAL_ERR;
 
     // Set hmac key, which should be AES_SHARED_KEY
     ret = wc_HmacSetKey(&h, WC_SHA256, secret, AESGCM_KEY_SIZE);
 
     // The message to hash, which should be the nonce data
-    if (ret == 0 && nonce_len > 0) {
+    if (ret == 0 && nonce_len > 0)
+    {
         ret = wc_HmacUpdate(&h, nonce, (word32)nonce_len);
     }
 
     // Calculate hmac digest
-    if (ret == 0) {
+    if (ret == 0)
+    {
         ret = wc_HmacFinal(&h, digest);
     }
     wc_HmacFree(&h);
-    if (ret != 0) {
+    if (ret != 0)
+    {
         memset(digest, 0x0, sizeof(digest));
         return INTERNAL_ERR;
     }
@@ -416,33 +487,31 @@ KERNEL_CODE int create_key(uint8_t *secret, uint8_t *nonce, uint32_t nonce_len, 
  *
  * @return 0 on success, negative number otherwise
  *
-*/
-KERNEL_CODE int copy_meta_if_C_permitted(file_metadata_t *dest, file_metadata_t *src) {
-    group_id_t group_id = src->group_id;  // the file's group id
-    
-    // Check if C permission is present on group  
+ */
+KERNEL_CODE int copy_meta_if_C_permitted(file_metadata_t *dest, file_metadata_t *src)
+{
+    group_id_t group_id = src->group_id; // the file's group id
+
+    // Check if C permission is present on group
     SECURE_PERM_CHECK(group_id, C_PERMISSION, global_permissions);
-    
+
     // Copy over the meta data
     memcpy(dest, src, sizeof(file_metadata_t));
-    
+
     return 0;
 }
 
-
 /////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////
-
 
 /////////////////////////////////////////////////////////////////////////
 //
 // SECURITY FUNCTIONS
 //
 /////////////////////////////////////////////////////////////////////////
-
 
 /** @brief Check pin and set active capability based on command
  *
@@ -453,45 +522,46 @@ KERNEL_CODE int copy_meta_if_C_permitted(file_metadata_t *dest, file_metadata_t 
  *
  * @security_req pin hash must match stored hash
  *
-*/
-KERNEL_CODE int secure_check_pin(msg_type_t cmd, unsigned char *pin) {
-    
-    if (cmd == LISTEN_MSG) { // pin not required for listen command
+ */
+KERNEL_CODE int secure_check_pin(msg_type_t cmd, unsigned char *pin)
+{
+
+    if (cmd == LISTEN_MSG)
+    { // pin not required for listen command
         active_cap = CMD_TO_CAP_MAP[LISTEN_MSG];
         return 0;
-    } 
-    
-    if (pin == NULL) return INTERNAL_ERR;    
+    }
 
-	active_cap = 0x00;  // no capability
-	__asm__ volatile("" ::: "memory");  // memory sync
-    
-        
+    if (pin == NULL)
+        return INTERNAL_ERR;
+
+    active_cap = 0x00;                 // no capability
+    __asm__ volatile("" ::: "memory"); // memory sync
+
     byte salted_pin[PIN_SALT_LEN + PIN_LENGTH];
     byte computed_hash[PIN_HASH_LEN];
 
     // Compute SHA256 hash of (salt | pin)
     memcpy(&salted_pin[0], (void *)pin_hash.salt, PIN_SALT_LEN);
     memcpy(&salted_pin[PIN_SALT_LEN], pin, PIN_LENGTH);
-    
-    int hc = wc_Sha256Hash((const byte*)salted_pin, (word32)(PIN_SALT_LEN + PIN_LENGTH), computed_hash);
-    if (hc != 0) {
+
+    int hc = wc_Sha256Hash((const byte *)salted_pin, (word32)(PIN_SALT_LEN + PIN_LENGTH), computed_hash);
+    if (hc != 0)
+    {
         return INTERNAL_ERR;
     }
-    
+
     // Compare derived hash to expected (from secrets.h)
-    int ret = ConstantCompare(computed_hash, (void *)pin_hash.hash, PIN_HASH_LEN) ^ 0xA5A5A5A5u;    
+    int ret = ConstantCompare(computed_hash, (void *)pin_hash.hash, PIN_HASH_LEN) ^ 0xA5A5A5A5u;
     EQ_CHECK_BARRIER(ret & 0xFFFFFFFFu, 0xA5A5A5A5u, PIN_ERR);
-    
+
     memset(computed_hash, 0x00, PIN_HASH_LEN); // scrub the hash
 
     // Lookup capability based on command and set as active
     active_cap = CMD_TO_CAP_MAP[cmd];
 
-
     return 0;
 }
-
 
 /** @brief Read a file, decrypt it, and provide to local user
  *
@@ -504,8 +574,9 @@ KERNEL_CODE int secure_check_pin(msg_type_t cmd, unsigned char *pin) {
  *
  * @security_req active_cap = CAP_READ and R permission on file group
  *
-*/
-KERNEL_CODE int secure_read_file(slot_t slot, file_t *curr_file) {
+ */
+KERNEL_CODE int secure_read_file(slot_t slot, file_t *curr_file)
+{
     int ret = -1;
     file_header_t f_header;
     uint32_t headers_len = offsetof(file_t, aes_gcm_iv);
@@ -515,11 +586,14 @@ KERNEL_CODE int secure_read_file(slot_t slot, file_t *curr_file) {
     uint8_t nonce[sizeof(file_header_t) + UUID_SIZE + 16] = {0};
 
     // Validate inputs
-    if (curr_file == NULL) return INTERNAL_ERR;
-    if (slot < 0 || slot > 7) return READ_ERR;
+    if (curr_file == NULL)
+        return INTERNAL_ERR;
+    if (slot < 0 || slot > 7)
+        return READ_ERR;
 
     // Read the file header, check permission
-    if (read_file_metadata(slot, &f_header) < 0) {
+    if (read_file_metadata(slot, &f_header) < 0)
+    {
         return READ_META_ERR;
     }
     SECURE_CAP_CHECK(CAP_READ);
@@ -533,7 +607,8 @@ KERNEL_CODE int secure_read_file(slot_t slot, file_t *curr_file) {
     ret = create_key((uint8_t *)aes_128_shared_key,
                      (uint8_t *)nonce, sizeof(nonce),
                      (uint8_t *)key);
-    if (ret != 0) return INTERNAL_ERR;
+    if (ret != 0)
+        return INTERNAL_ERR;
 
     // Decrypt and check integrity
     memcpy(iv_buffer, f_header.aes_gcm_iv, AESGCM_IV_SIZE);
@@ -551,11 +626,11 @@ KERNEL_CODE int secure_read_file(slot_t slot, file_t *curr_file) {
     memset(key, 0, AESGCM_KEY_SIZE);
     __asm__ volatile("" ::: "memory");
     erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
-    if (ret != 0) return INTERNAL_ERR;
+    if (ret != 0)
+        return INTERNAL_ERR;
 
     return ret;
 }
-
 
 /** @brief Prepare a list of file metadata and provide to local user
  *
@@ -567,48 +642,48 @@ KERNEL_CODE int secure_read_file(slot_t slot, file_t *curr_file) {
  *
  * @security_req active_cap = CAP_READ_META
  *
-*/
-KERNEL_CODE int secure_read_file_meta(void *file_list_ptr) {
+ */
+KERNEL_CODE int secure_read_file_meta(void *file_list_ptr)
+{
 
     list_response_t *file_list = (list_response_t *)file_list_ptr;
-          
-    if (file_list_ptr == NULL) return INTERNAL_ERR;
-    
-    
-    // No specific permissions checked here but active capability 
+
+    if (file_list_ptr == NULL)
+        return INTERNAL_ERR;
+
+    // No specific permissions checked here but active capability
     // must be equal to required capability
     SECURE_CAP_CHECK(CAP_READ_META);
-    
-    
+
     /** Begin operation **/
-        
-        
+
     file_header_t header;
     file_list->n_files = 0;
 
     // Loop through all files on the system
-    for (uint8_t i = 0; i < MAX_FILE_COUNT; i++) {
-    
+    for (uint8_t i = 0; i < MAX_FILE_COUNT; i++)
+    {
+
         // Read file metadata
-        if (read_file_metadata(i, &header) < 0) {
-            continue;  // nothing in slot i
+        if (read_file_metadata(i, &header) < 0)
+        {
+            continue; // nothing in slot i
         }
-    
+
         // If the file is in use, populate response
-        if (header.in_use == FILE_IN_USE) {			
+        if (header.in_use == FILE_IN_USE)
+        {
             file_list->metadata[file_list->n_files].slot = i;
             file_list->metadata[file_list->n_files].group_id = header.group_id;
-			
-            strncpy(file_list->metadata[file_list->n_files].name, 
+
+            strncpy(file_list->metadata[file_list->n_files].name,
                     (char *)&header.name, MAX_NAME_SIZE);
             file_list->n_files++;
         }
-        
     }
 
-	return 0;    
+    return 0;
 }
-
 
 /** @brief Write a file after encryption
  *
@@ -622,8 +697,9 @@ KERNEL_CODE int secure_read_file_meta(void *file_list_ptr) {
  *
  * @security_req active_cap = CAP_WRITE and W permission on file group
  *
-*/
-KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid) {
+ */
+KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid)
+{
     int ret = -1;
     uint32_t headers_len = offsetof(file_t, aes_gcm_iv);
     uint8_t key[AESGCM_KEY_SIZE] = {0};
@@ -632,8 +708,10 @@ KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid) {
     uint8_t nonce[sizeof(file_header_t) + UUID_SIZE + 16] = {0};
 
     // Validate inputs
-    if (src == NULL || uuid == NULL) return INTERNAL_ERR;
-    if (slot < 0 || slot > 7) return WRITE_ERR;
+    if (src == NULL || uuid == NULL)
+        return INTERNAL_ERR;
+    if (slot < 0 || slot > 7)
+        return WRITE_ERR;
 
     SECURE_CAP_CHECK(CAP_WRITE);
     SECURE_PERM_CHECK(src->group_id, W_PERMISSION, global_permissions);
@@ -647,19 +725,22 @@ KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid) {
     ret = create_key((uint8_t *)aes_128_shared_key,
                      (uint8_t *)nonce, sizeof(nonce),
                      (uint8_t *)key);
-    if (ret != 0) return INTERNAL_ERR;
+    if (ret != 0)
+        return INTERNAL_ERR;
 
     // Clear enough memory for this file at k_curr_file (kernel memory reserved for file operations)
     ret = erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
-    if (ret != 0) return INTERNAL_ERR;
+    if (ret != 0)
+        return INTERNAL_ERR;
 
     // Encrypt for local storage (the resulting file header will be missing the iv and tag values)
     ret = copy_with_transform((uint8_t *)src, (uint8_t *)&k_curr_file,
-                          (uint8_t *)key, XFORM_ENC,
-                          (uint8_t *)tag_buffer, (uint8_t *)iv_buffer,
-                          FILE_TOTAL_SIZE(src->contents_len), sizeof(file_header_t),
-                          true);
-    if (ret != 0) return ret;
+                              (uint8_t *)key, XFORM_ENC,
+                              (uint8_t *)tag_buffer, (uint8_t *)iv_buffer,
+                              FILE_TOTAL_SIZE(src->contents_len), sizeof(file_header_t),
+                              true);
+    if (ret != 0)
+        return ret;
 
     // Copy the first page from flash to ram
     uint8_t copy_buffer[FLASH_PAGE_SIZE] = {0};
@@ -674,11 +755,11 @@ KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid) {
     flash_simple_erase_page((uint32_t)&k_curr_file);
     flash_simple_write((uint32_t)&k_curr_file, copy_buffer, FLASH_PAGE_SIZE);
     ret = write_file(slot, &k_curr_file, uuid);
-    if (ret != 0) return INTERNAL_ERR;
+    if (ret != 0)
+        return INTERNAL_ERR;
 
     return ret;
 }
-
 
 /** @brief Prepare a list of encrypted file metadata for remote user
  *
@@ -690,95 +771,93 @@ KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid) {
  *
  * @security_req active_cap = CAP_SEND and W permission on reported files
  *
-*/
-KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr) {
+ */
+KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr)
+{
 
     list_response_enc_t *file_list_transfer = (list_response_enc_t *)file_list_ptr;
     list_response_t k_file_list;
-                
-    int ret = -1;   
-    
-    if (file_list_ptr == NULL) return INTERNAL_ERR;
-    
-    
+
+    int ret = -1;
+
+    if (file_list_ptr == NULL)
+        return INTERNAL_ERR;
+
     // Active capability must be equal to required capability
     SECURE_CAP_CHECK(CAP_SEND);
-    
-    
+
     // Prepare metadata in internal buffer
-    memset(&k_file_list, 0x0, sizeof(list_response_t));    
+    memset(&k_file_list, 0x0, sizeof(list_response_t));
     k_file_list.n_files = 0;
-    
 
     // Loop through all files on the system
     file_header_t header;
-    
-    for (uint8_t i = 0; i < MAX_FILE_COUNT; i++) {
+
+    for (uint8_t i = 0; i < MAX_FILE_COUNT; i++)
+    {
         // Read file metadata
-        if (read_file_metadata(i, &header) < 0) {
-            continue;  // no file in slot
+        if (read_file_metadata(i, &header) < 0)
+        {
+            continue; // no file in slot
         }
-    
+
         // If the file is in use
-        if (header.in_use == FILE_IN_USE) {	
-        
-            // Since write permission needed to transfer a file, check if 
-            // write permission is present on group (secure_read_file_for_transfer 
+        if (header.in_use == FILE_IN_USE)
+        {
+
+            // Since write permission needed to transfer a file, check if
+            // write permission is present on group (secure_read_file_for_transfer
             // enforces this securely during actual transfer)
-            for (int j=0; j < MAX_PERMS; j++) {
-                if (global_permissions[j].group_id == header.group_id && 
-                    global_permissions[j].write == W_PERMISSION) {
-                
+            for (int j = 0; j < MAX_PERMS; j++)
+            {
+                if (global_permissions[j].group_id == header.group_id &&
+                    global_permissions[j].write == W_PERMISSION)
+                {
+
                     k_file_list.metadata[k_file_list.n_files].slot = i;
                     k_file_list.metadata[k_file_list.n_files].group_id = header.group_id;
-			
+
                     strncpy(k_file_list.metadata[k_file_list.n_files].name, (char *)&header.name, MAX_NAME_SIZE);
                     k_file_list.n_files++;
                 }
             }
         }
     }
-    
-    // TODO: need to create a session key, encrypt the data, and put in user buffer
-    
-    	    
-	return -1;
-    
-}
 
+    // TODO: need to create a session key, encrypt the data, and put in user buffer
+
+    return -1;
+}
 
 /** @brief Filter received list of encrypted file metadata and provide to local user
  *
  * @param file_list_ptr: user buffer with encrypted file metadata
  * @param nonce: this side's nonce used in transfer encryption
  *
- * @return 0 on success (user buffer will contain decrypted content), 
+ * @return 0 on success (user buffer will contain decrypted content),
  *         negative number on error
  *
  * @note Runs for INTERROGATE command on initiator side
  *
  * @security_req active_cap = CAP_FILTER_META and C permission on reported files
  *
-*/
-KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce) {
+ */
+KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce)
+{
     list_response_enc_t *file_list_transfer = (list_response_enc_t *)file_list_ptr;
     list_response_t k_file_list;
     uint8_t key[AESGCM_KEY_SIZE] = {0};
-    
+
     int ret = -1;
-   
-   
-    if (file_list_ptr == NULL || nonce == NULL) return INTERNAL_ERR;
-    
-    
+
+    if (file_list_ptr == NULL || nonce == NULL)
+        return INTERNAL_ERR;
+
     // TODO: need to check capability, create session key, decrypt received data, filter
     // the list based on permission, and put result in user buffer
-    
-    
-	
+
     return -1;
 }
-
 
 /** @brief Prepare an encrypted file for remote user
  *
@@ -791,27 +870,28 @@ KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce) {
  *
  * @security_req active_cap = CAP_SEND, local W permission and remote C permission on file
  *
-*/
-KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_ptr) {
+ */
+KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_ptr)
+{
     receive_request_t *request = (receive_request_t *)request_ptr;
-    receive_response_enc_t *response = (receive_response_enc_t *)response_ptr;        
+    receive_response_enc_t *response = (receive_response_enc_t *)response_ptr;
 
     int ret = -1;
-    
-    if (request_ptr == NULL || response_ptr == NULL) return INTERNAL_ERR;
-    
-    slot_t slot = request->slot;       
-    if (slot < 0 || slot > 7) return READ_ERR;
-    
-    
-    // TODO: need to check capability, check permissions, decrypt local file and re-encrypt 
+
+    if (request_ptr == NULL || response_ptr == NULL)
+        return INTERNAL_ERR;
+
+    slot_t slot = request->slot;
+    if (slot < 0 || slot > 7)
+        return READ_ERR;
+
+    // TODO: need to check capability, check permissions, decrypt local file and re-encrypt
     // for transfer
-    
+
     return -1;
 }
 
-
-/** @brief Decrypt received file, re-encrypt and store 
+/** @brief Decrypt received file, re-encrypt and store
  *
  * @param response_ptr: user buffer with encrypted file data
  * @param req_nonce: the nonce used during request
@@ -823,26 +903,20 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
  *
  * @security_req active_cap = CAP_RECEIVE and C permission on file
  *
-*/
-KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req_nonce, slot_t slot) {
+ */
+KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req_nonce, slot_t slot)
+{
     receive_response_enc_t *response = (receive_response_enc_t *)response_ptr;
-    
-    
+
     int ret = -1;
-    
-    if (response_ptr == NULL || req_nonce == NULL) return INTERNAL_ERR;
-    if (slot < 0 || slot > 7) return RECEIVE_ERR;
-    
+
+    if (response_ptr == NULL || req_nonce == NULL)
+        return INTERNAL_ERR;
+    if (slot < 0 || slot > 7)
+        return RECEIVE_ERR;
+
     // TODO: need to decrypt received file, check capability+permission, create local key,
     // re-encrypt with key and store file
-    
 
     return -1;
 }
-
-
-
-
-
-
-
