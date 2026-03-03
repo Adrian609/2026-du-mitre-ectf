@@ -760,24 +760,136 @@ KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr) {
  * @security_req active_cap = CAP_FILTER_META and C permission on reported files
  *
 */
-KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce) {
+KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce) { 
+
     list_response_enc_t *file_list_transfer = (list_response_enc_t *)file_list_ptr;
+
     list_response_t k_file_list;
+
     uint8_t key[AESGCM_KEY_SIZE] = {0};
-    
+
+    uint8_t iv_buffer[AESGCM_IV_SIZE] = {0};
+
+    uint8_t tag_buffer[AESGCM_TAG_SIZE] = {0};
+
+    uint8_t local_nonce[NONCE_SIZE + NONCE_SIZE + 16] = {0};
+
     int ret = -1;
-   
-   
+
     if (file_list_ptr == NULL || nonce == NULL) return INTERNAL_ERR;
+
+    SECURE_CAP_CHECK(CAP_FILTER_META);
+
+    uint32_t kdf_len = (uint32_t)(NONCE_SIZE + NONCE_SIZE + 16);
+
+    // Derive key using nonce and shared secret
+
+    join_bytes((uint8_t *)local_nonce,
+
+               (uint8_t *)nonce, (uint32_t)NONCE_SIZE,
+
+               (uint8_t *)file_list_transfer->nonce, (uint32_t)NONCE_SIZE,
+
+               (uint8_t *)TRANSFER_LABEL_FILE, (uint32_t)strlen(TRANSFER_LABEL_FILE),
+
+               NULL);
+
+    ret = create_key((uint8_t *)aes_128_shared_key,
+
+                     (uint8_t *)local_nonce, kdf_len,
+
+                     (uint8_t *)key);
+
+    if (ret != 0){
+
+        return INTERNAL_ERR;
+
+    } 
+
+    // Decrypt and check integrity
+
+    memcpy(iv_buffer, file_list_transfer->iv, AESGCM_IV_SIZE);
+
+    memcpy(tag_buffer, file_list_transfer->tag, AESGCM_TAG_SIZE);
+
+    ret = copy_with_transform((uint8_t *)&file_list_transfer->data, (uint8_t *)&k_file_list,
+
+                              (uint8_t *)key, XFORM_DEC,
+
+                              (uint8_t *)tag_buffer, (uint8_t *)iv_buffer,
+
+                              sizeof(list_response_t), 0,
+
+                              false);
+
+    if (ret != 0){
+
+        return ret;
+
+    }
+
+    //Check that file list isn't bigger than maximum size
+
+    if (k_file_list.n_files > MAX_FILE_COUNT){
+
+        return INTERNAL_ERR;
+
+        }
+
+    //Iterate through array of stored file metadata and determine which ones match permissions
+
+    uint8_t out = 0;
+
+    for (uint8_t i = 0; i < k_file_list.n_files; i++) {
+
+        ret = copy_meta_if_C_permitted(&k_file_list.metadata[out], &k_file_list.metadata[i]);
+
+        if (ret == 0) {
+
+            out++;
+
+            continue;
+
+        }
+
+        if (ret == PERM_ERR) {
+
+            ret = 0;
+
+            continue;
+
+        }
+
+        ret = INTERNAL_ERR;
+
+    }
+
+    k_file_list.n_files = out;
+
+    memcpy(&file_list_transfer->data, &k_file_list, sizeof(list_response_t));
+
+    file_list_transfer->data_len = sizeof(list_response_t);
+
+    //Clean memory
+
+    memset(iv_buffer, 0, AESGCM_IV_SIZE);
+
+    memset(tag_buffer, 0, AESGCM_TAG_SIZE);
+
+    memset(key, 0, AESGCM_KEY_SIZE);
+
+    memset(local_nonce, 0, sizeof(local_nonce));
+
+    memset(&k_file_list, 0, sizeof(list_response_t));
+
+    __asm__ volatile("" ::: "memory");
+
     
-    
-    // TODO: need to check capability, create session key, decrypt received data, filter
-    // the list based on permission, and put result in user buffer
-    
-    
-	
-    return -1;
+
+    return 0;
+
 }
+
 
 
 /** @brief Prepare an encrypted file for remote user
