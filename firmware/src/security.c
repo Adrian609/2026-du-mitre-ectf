@@ -986,138 +986,192 @@ KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce)
 KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr)
 {
 
-    list_response_enc_t *file_list_transfer = (list_response_enc_t *)file_list_ptr;
-
-    list_response_t k_file_list;
+    KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_ptr) {
 
     int ret = -1;
 
-    if (file_list_ptr == NULL)
-        return INTERNAL_ERR;
+    receive_request_t *request = (receive_request_t *)request_ptr;
 
-    uint8_t key[AESGCM_KEY_SIZE] = {0};
+    receive_response_enc_t *response = (receive_response_enc_t *)response_ptr;        
 
-    // Active capability must be equal to required capability
+    
+
+    // Validate inputs
+
+    if (request_ptr == NULL || response_ptr == NULL) return INTERNAL_ERR;
+
+    slot_t slot = request->slot;       
+
+    if (slot < 0 || slot > 7) return READ_ERR;
+
+    // Verify signature of the request permissions
+
+    uint8_t permissions_sig[HMAC_SIZE];
+
+    Hmac hmac;
+
+    wc_HmacSetKey(&hmac, WC_SHA256, (void *)aes_128_shared_key, AESGCM_KEY_SIZE);
+
+    wc_HmacUpdate(&hmac, (void *)request->permissions, sizeof(group_permission_t) * MAX_PERMS);
+
+    wc_HmacFinal(&hmac, (void *)permissions_sig);
+
+    if (memcmp(permissions_sig, request->permissions_sig, HMAC_SIZE) != 0) return INTERNAL_ERR;
+
+    wc_HmacFree(&hmac);
+
+    
+
+    // Read the local file header, check against the verified permissions
+
+    file_header_t f_header;
+
+    if (read_file_metadata(request->slot, &f_header) < 0) {
+
+        return READ_META_ERR;
+
+    }
 
     SECURE_CAP_CHECK(CAP_SEND);
 
-    // Prepare metadata in internal buffer
+    SECURE_PERM_CHECK(f_header.group_id, C_PERMISSION, request->permissions);
 
-    memset(&k_file_list, 0x0, sizeof(list_response_t));
+    // Derive local_key for decryption
 
-    k_file_list.n_files = 0;
+    uint32_t headers_len = offsetof(file_t, aes_gcm_iv);
 
-    // Loop through all files on the system
+    uint8_t key[AESGCM_KEY_SIZE] = {0};
 
-    file_header_t header;
+    uint8_t local_nonce[sizeof(file_header_t) + UUID_SIZE + 16] = {0};
 
-    // Make file metadata array
+    join_bytes((uint8_t *)local_nonce, (uint8_t *)&f_header, (uint32_t)headers_len,
 
-    for (uint8_t i = 0; i < MAX_FILE_COUNT; i++)
-    {
+               (uint8_t *)FILE_ALLOCATION_TABLE[slot].uuid, (uint32_t)UUID_SIZE,
 
-        // Read file metadata
-
-        if (read_file_metadata(i, &header) < 0)
-        {
-
-            continue; // no file in slot
-        }
-
-        // If the file is in use
-
-        if (header.in_use == FILE_IN_USE)
-        {
-
-            k_file_list.metadata[k_file_list.n_files].slot = i;
-
-            k_file_list.metadata[k_file_list.n_files].group_id = header.group_id;
-
-            strncpy(k_file_list.metadata[k_file_list.n_files].name, (char *)&header.name, MAX_NAME_SIZE);
-
-            k_file_list.n_files++;
-        }
-    }
-
-    uint8_t nonce_a[NONCE_SIZE] = {0};
-
-    // Get nonce A from passed file_list_ptr struct
-
-    memcpy(nonce_a, file_list_transfer->nonce, NONCE_SIZE);
-
-    uint8_t nonce_b[NONCE_SIZE] = {0};
-
-    // Create nonce B bytes, derive key
-
-    ret = generate_random_bytes(nonce_b, NONCE_SIZE);
-
-    if (ret != 0)
-        return INTERNAL_ERR;
-
-    memcpy(file_list_transfer->nonce, nonce_b, NONCE_SIZE);
-
-    uint32_t kdf_len = (NONCE_SIZE + NONCE_SIZE + 16);
-
-    uint8_t kdf_nonce[NONCE_SIZE + NONCE_SIZE + 32] = {0};
-
-    // create main KDF nonce nonce_A || nonce_B || label
-
-    join_bytes((uint8_t *)kdf_nonce,
-
-               (uint8_t *)nonce_a, (uint32_t)NONCE_SIZE,
-
-               (uint8_t *)nonce_b, (uint32_t)NONCE_SIZE,
-
-               (uint8_t *)TRANSFER_LABEL_FILE, (uint32_t)strlen(TRANSFER_LABEL_FILE),
+               (uint8_t *)LOCAL_LABEL_FILE, (uint32_t)strlen(LOCAL_LABEL_FILE),
 
                NULL);
 
     ret = create_key((uint8_t *)aes_128_shared_key,
 
-                     (uint8_t *)kdf_nonce, kdf_len,
+                     (uint8_t *)local_nonce, sizeof(local_nonce),
 
                      (uint8_t *)key);
 
-    if (ret != 0)
-        return INTERNAL_ERR;
+    if (ret != 0) return INTERNAL_ERR;
 
-    // set data len
+    // Clear enough memory for this file at k_curr_file and k_curr_file_b
 
-    file_list_transfer->data_len = sizeof(list_response_t);
+    ret = erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
 
-    // Encrypt for transfer
+    if (ret != 0) return INTERNAL_ERR;
 
-    ret = copy_with_transform((uint8_t *)&k_file_list, (uint8_t *)&file_list_transfer->data,
+    ret = erase_scratchpad_pages((uint32_t)&k_curr_file_b, sizeof(file_t));
+
+    if (ret != 0) return INTERNAL_ERR;
+
+    // Perform local decrypt
+
+    uint8_t iv_buffer[AESGCM_IV_SIZE] = {0};
+
+    uint8_t tag_buffer[AESGCM_TAG_SIZE] = {0};
+
+    memcpy(iv_buffer, f_header.aes_gcm_iv, AESGCM_IV_SIZE);
+
+    memcpy(tag_buffer, f_header.aes_gcm_tag, AESGCM_TAG_SIZE);
+
+    read_file(slot, &k_curr_file);
+
+    ret = copy_with_transform((uint8_t *)&k_curr_file, (uint8_t *)&k_curr_file_b,
+
+                              (uint8_t *)key, XFORM_DEC,
+
+                              (uint8_t *)tag_buffer, (uint8_t *)iv_buffer,
+
+                              FILE_TOTAL_SIZE(k_curr_file.contents_len), sizeof(file_header_t),
+
+                              true);
+
+    erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
+
+    if (ret != 0) return INTERNAL_ERR;
+
+    // Derive temporary key for transfer encrypt (new nonce + request nonce + context)
+
+    uint8_t temp_nonce[NONCE_SIZE * 2 + 16];
+
+    // New nonce
+
+    uint8_t nonce_buffer[NONCE_SIZE];
+
+    generate_random_bytes(nonce_buffer, NONCE_SIZE);
+
+    // Combine with request nonce and derive transfer key
+
+    join_bytes((uint8_t *)temp_nonce, (uint8_t *)nonce_buffer, (uint32_t)NONCE_SIZE,
+
+               (uint8_t *)request->nonce, (uint32_t)NONCE_SIZE,
+
+               (uint8_t *)TRANSFER_LABEL_FILE, (uint32_t)strlen(TRANSFER_LABEL_FILE),
+
+               NULL); ret = create_key((uint8_t *)aes_128_shared_key,
+
+                     (uint8_t *)temp_nonce, sizeof(temp_nonce),
+
+                     (uint8_t *)key);
+
+    if (ret != 0) return INTERNAL_ERR;
+
+    // Perform transfer encrypt
+
+    ret = copy_with_transform((uint8_t *)&k_curr_file_b, (uint8_t *)&(response->data.file_enc),
 
                               (uint8_t *)key, XFORM_ENC,
 
-                              (uint8_t *)&file_list_transfer->tag, (uint8_t *)&file_list_transfer->iv,
+                              (uint8_t *)tag_buffer, (uint8_t *)iv_buffer,
 
-                              sizeof(list_response_t), 0,
+                              FILE_TOTAL_SIZE(k_curr_file_b.contents_len), sizeof(file_header_t),
 
                               false);
 
-    if (ret != 0)
-    {
+    erase_scratchpad_pages((uint32_t)&k_curr_file_b, sizeof(file_t));
 
-        return ret;
-    }
+    if (ret != 0) return INTERNAL_ERR;
 
-    // Clean memory
+    // Set response metadata fields 
+
+    memcpy(response->data.uuid, FILE_ALLOCATION_TABLE[slot].uuid, UUID_SIZE);
+
+    memcpy(response->nonce, nonce_buffer, NONCE_SIZE);
+
+    memcpy(response->iv, iv_buffer, AESGCM_IV_SIZE);
+
+    memcpy(response->tag, tag_buffer, AESGCM_TAG_SIZE);
+
+    response->data_len = FILE_TOTAL_SIZE(response->data.file_enc.contents_len);
+
+    
+
+    // Clean up memory
+
+    memset(local_nonce, 0, sizeof(local_nonce));
+
+    memset(temp_nonce, 0, sizeof(temp_nonce));
+
+    memset(nonce_buffer, 0, NONCE_SIZE);
+
+    memset(iv_buffer, 0, AESGCM_IV_SIZE);
+
+    memset(tag_buffer, 0, AESGCM_TAG_SIZE);
 
     memset(key, 0, AESGCM_KEY_SIZE);
 
-    memset(nonce_a, 0, NONCE_SIZE);
-
-    memset(nonce_b, 0, NONCE_SIZE);
-
-    memset(kdf_nonce, 0, kdf_len);
-
-    memset(&k_file_list, 0, sizeof(list_response_t));
-
     __asm__ volatile("" ::: "memory");
 
-    return 0;
+    if (ret != 0) return INTERNAL_ERR;
+
+    return ret;
+
 }
 
 /** @brief Decrypt received file, re-encrypt and store
@@ -1133,19 +1187,164 @@ KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr)
  * @security_req active_cap = CAP_RECEIVE and C permission on file
  *
  */
-KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req_nonce, slot_t slot)
-{
-    receive_response_enc_t *response = (receive_response_enc_t *)response_ptr;
+KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req_nonce, slot_t slot) {
 
     int ret = -1;
 
-    if (response_ptr == NULL || req_nonce == NULL)
-        return INTERNAL_ERR;
-    if (slot < 0 || slot > 7)
-        return RECEIVE_ERR;
+    receive_response_enc_t *response = (receive_response_enc_t *)response_ptr;
 
-    // TODO: need to decrypt received file, check capability+permission, create local key,
-    // re-encrypt with key and store file
+    
 
-    return -1;
+    // Validate inputs
+
+    if (response_ptr == NULL || req_nonce == NULL) return INTERNAL_ERR;
+
+    if (slot < 0 || slot > 7) return RECEIVE_ERR;
+
+    
+
+    // Read the incoming file header, check permission
+
+    SECURE_CAP_CHECK(CAP_RECEIVE);
+
+    SECURE_PERM_CHECK(response->data.file_enc.group_id, C_PERMISSION, global_permissions);
+
+    // Derive temporary key for transfer decrypt (response nonce + request nonce + context)
+
+    uint8_t temp_nonce[NONCE_SIZE * 2 + 16];
+
+    // Combine nonces and derive transfer key
+
+    uint8_t key[AESGCM_KEY_SIZE] = {0};
+
+    join_bytes((uint8_t *)temp_nonce, (uint8_t *)response->nonce, (uint32_t)NONCE_SIZE,
+
+               (uint8_t *)req_nonce, (uint32_t)NONCE_SIZE,
+
+               (uint8_t *)TRANSFER_LABEL_FILE, (uint32_t)strlen(TRANSFER_LABEL_FILE),
+
+               NULL);
+
+    ret = create_key((uint8_t *)aes_128_shared_key,
+
+                     (uint8_t *)temp_nonce, sizeof(temp_nonce),
+
+                     (uint8_t *)key);
+
+    if (ret != 0) return INTERNAL_ERR;
+
+    // Clear enough memory for this file at k_curr_file
+
+    ret = erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
+
+    if (ret != 0) return INTERNAL_ERR;
+
+    // Perform transfer decrypt
+
+    uint8_t iv_buffer[AESGCM_IV_SIZE] = {0};
+
+    uint8_t tag_buffer[AESGCM_TAG_SIZE] = {0};
+
+    memcpy(iv_buffer, response->iv, AESGCM_IV_SIZE);
+
+    memcpy(tag_buffer, response->tag, AESGCM_TAG_SIZE);
+
+    ret = copy_with_transform((uint8_t *)&(response->data.file_enc), (uint8_t *)&k_curr_file, 
+
+                              (uint8_t *)key, XFORM_DEC,
+
+                              (uint8_t *)tag_buffer, (uint8_t *)iv_buffer,
+
+                              FILE_TOTAL_SIZE(response->data.file_enc.contents_len), sizeof(file_header_t),
+
+                              true);
+
+    if (ret != 0) return INTERNAL_ERR;
+
+    // Derive local_key for encryption
+
+    uint32_t headers_len = offsetof(file_t, aes_gcm_iv);
+
+    uint8_t local_nonce[sizeof(file_header_t) + UUID_SIZE + 16] = {0};
+
+    join_bytes((uint8_t *)local_nonce, (uint8_t *)&(response->data.file_enc), (uint32_t)headers_len,
+
+               (uint8_t *)response->data.uuid, (uint32_t)UUID_SIZE,
+
+               (uint8_t *)LOCAL_LABEL_FILE, (uint32_t)strlen(LOCAL_LABEL_FILE),
+
+               NULL);
+
+    ret = create_key((uint8_t *)aes_128_shared_key,
+
+                     (uint8_t *)local_nonce, sizeof(local_nonce),
+
+                     (uint8_t *)key);
+
+    if (ret != 0) return INTERNAL_ERR;
+
+    // Clear enough memory for this file at k_curr_file_b
+
+    ret = erase_scratchpad_pages((uint32_t)&k_curr_file_b, sizeof(file_t));
+
+    if (ret != 0) return INTERNAL_ERR;
+
+    // Perform local encrypt
+
+    ret = copy_with_transform((uint8_t *)&k_curr_file, (uint8_t *)&k_curr_file_b,
+
+                              (uint8_t *)key, XFORM_ENC,
+
+                              (uint8_t *)tag_buffer, (uint8_t *)iv_buffer,
+
+                              FILE_TOTAL_SIZE(k_curr_file.contents_len), sizeof(file_header_t),
+
+                              true);
+
+    erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
+
+    if (ret != 0) return INTERNAL_ERR;
+
+    // Copy the first page from flash to ram
+
+    uint8_t copy_buffer[FLASH_PAGE_SIZE] = {0};
+
+    memcpy(copy_buffer, &k_curr_file_b, FLASH_PAGE_SIZE);
+
+    flash_simple_erase_page((uint32_t)&k_curr_file_b);
+
+    // Store the iv and tag in the ram copy's file header
+
+    memcpy(((file_header_t *)copy_buffer)->aes_gcm_iv, iv_buffer, AESGCM_IV_SIZE);
+
+    memcpy(((file_header_t *)copy_buffer)->aes_gcm_tag, tag_buffer, AESGCM_TAG_SIZE);
+
+    __asm__ volatile("" ::: "memory");
+
+    // Write the modified first page back out to flash so that contents can be decrypted and verified later
+
+    flash_simple_write((uint32_t)&k_curr_file_b, copy_buffer, FLASH_PAGE_SIZE);
+
+    ret = write_file(slot, &k_curr_file_b, response->data.uuid);
+
+    if (ret != 0) return INTERNAL_ERR;
+
+    // Clean up memory
+
+    erase_scratchpad_pages((uint32_t)&k_curr_file_b, sizeof(file_t));
+
+    memset(local_nonce, 0, sizeof(local_nonce));
+
+    memset(temp_nonce, 0, sizeof(temp_nonce));
+
+    memset(iv_buffer, 0, AESGCM_IV_SIZE);
+
+    memset(tag_buffer, 0, AESGCM_TAG_SIZE);
+
+    memset(key, 0, AESGCM_KEY_SIZE);
+
+    __asm__ volatile("" ::: "memory");
+
+    return ret;
+
 }
