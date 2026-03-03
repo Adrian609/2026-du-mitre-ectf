@@ -990,12 +990,12 @@ KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr)
 
     list_response_t k_file_list;
 
+    uint8_t key[AESGCM_KEY_SIZE] = {0};
+
     int ret = -1;
 
     if (file_list_ptr == NULL)
         return INTERNAL_ERR;
-
-    uint8_t key[AESGCM_KEY_SIZE] = {0};
 
     // Active capability must be equal to required capability
 
@@ -1052,10 +1052,18 @@ KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr)
     ret = generate_random_bytes(nonce_b, NONCE_SIZE);
 
     if (ret != 0)
+    {
+        // BUG FIX (L1063): Missing memory cleanup before early return
+        memset(key, 0, AESGCM_KEY_SIZE);
+        memset(nonce_a, 0, NONCE_SIZE);
+        memset(nonce_b, 0, NONCE_SIZE);
+        __asm__ volatile("" ::: "memory");
         return INTERNAL_ERR;
+    }
 
     memcpy(file_list_transfer->nonce, nonce_b, NONCE_SIZE);
 
+    // TODO (L1069): Magic numbers 16 and 32 should be named constants
     uint32_t kdf_len = (NONCE_SIZE + NONCE_SIZE + 16);
 
     uint8_t kdf_nonce[NONCE_SIZE + NONCE_SIZE + 32] = {0};
@@ -1079,7 +1087,15 @@ KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr)
                      (uint8_t *)key);
 
     if (ret != 0)
+    {
+        // BUG FIX (L1084): Missing memory cleanup before early return
+        memset(key, 0, AESGCM_KEY_SIZE);
+        memset(nonce_a, 0, NONCE_SIZE);
+        memset(nonce_b, 0, NONCE_SIZE);
+        memset(kdf_nonce, 0, sizeof(kdf_nonce));
+        __asm__ volatile("" ::: "memory");
         return INTERNAL_ERR;
+    }
 
     // set data len
 
@@ -1099,7 +1115,13 @@ KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr)
 
     if (ret != 0)
     {
-
+        // BUG FIX (L1100): Missing memory cleanup before early return
+        memset(key, 0, AESGCM_KEY_SIZE);
+        memset(nonce_a, 0, NONCE_SIZE);
+        memset(nonce_b, 0, NONCE_SIZE);
+        memset(kdf_nonce, 0, sizeof(kdf_nonce));
+        memset(&k_file_list, 0, sizeof(list_response_t));
+        __asm__ volatile("" ::: "memory");
         return ret;
     }
 
@@ -1111,7 +1133,8 @@ KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr)
 
     memset(nonce_b, 0, NONCE_SIZE);
 
-    memset(kdf_nonce, 0, kdf_len);
+    // BUG FIX (L1113): Use sizeof(kdf_nonce) instead of kdf_len to clear full buffer
+    memset(kdf_nonce, 0, sizeof(kdf_nonce));
 
     memset(&k_file_list, 0, sizeof(list_response_t));
 
