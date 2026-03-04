@@ -9,6 +9,9 @@
 !LICENSE.txt
 !README.md
 !Makefile
+!.github
+!.github/workflows
+!.github/workflows/ci-cd.yml
 !ectf26_design
 !ectf26_design/src
 !ectf26_design/src/ectf26_design.egg-info
@@ -56,6 +59,5 @@
 !firmware/inc/kernel.h
 !firmware/Makefile
 !firmware/build.sh
-
 
 
