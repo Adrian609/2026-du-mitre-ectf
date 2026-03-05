@@ -267,17 +267,15 @@ KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
                                 uint8_t *tag, uint8_t *iv,
                                 uint32_t len, uint32_t clear_offset,
                                 bool is_dest_flash) {
-    print_debug("CWT: clear_offset");
-    print_hex_debug(&clear_offset, sizeof(uint32_t));
 
-    // validate parameters
+    // Validate parameters
     if(in_buffer == NULL || out_buffer == NULL || key == NULL || tag == NULL || iv == NULL) return INTERNAL_ERR;
     if(mode != XFORM_ENC && mode != XFORM_DEC) return INTERNAL_ERR;
 
-    // clamp clear_offset to len
+    // Clamp clear_offset to len
     if(clear_offset > len) clear_offset = len;
 
-    // crypto init, if any
+    // Crypto init, if any
     if (mode == XFORM_ENC) {
         generate_random_bytes(iv, AESGCM_IV_SIZE);
         int ret = wc_AesGcmEncryptInit(&e_gcm, key, AESGCM_KEY_SIZE, iv, AESGCM_IV_SIZE);
@@ -287,15 +285,15 @@ KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
         if(ret < 0) return AES_DECRYPT_ERR;
     }
 
-    // initialize buffer with zeroes 
+    // Initialize buffer with zeroes 
 	uint8_t sram_buffer[FLASH_PAGE_SIZE] = {0};
 
     for(int i = 0; i < len; i += FLASH_PAGE_SIZE) {
 
-        // clear sram_buffer
+        // Clear sram_buffer
         memset(sram_buffer, 0x00, FLASH_PAGE_SIZE);
 
-        // figure out how many bytes to copy 
+        // Figure out how many bytes to copy 
         int n;
         if(i + FLASH_PAGE_SIZE < len) {
             n = FLASH_PAGE_SIZE;
@@ -303,7 +301,7 @@ KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
             n = len - i;
         }
 
-        // how many bytes in this chunk are clear
+        // How many bytes in this chunk are clear
         int clear_bytes = 0;
         if(clear_offset <= i) {
             clear_bytes = 0;
@@ -313,15 +311,15 @@ KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
             clear_bytes = clear_offset - i;
         }
 
-        // how many bytes in this chunk are to be encrypted or decrypted
+        // How many bytes in this chunk are to be encrypted or decrypted
         int remaining_bytes = n - clear_bytes;
 
-        // copy clear bytes
+        // Copy clear bytes
         if(clear_bytes > 0) {
             memcpy(sram_buffer, in_buffer + i, clear_bytes);
         }
 
-        // perform crypto operations
+        // Perform crypto operations
         if(remaining_bytes > 0) {
             if (mode == XFORM_ENC) {
                 int ret = wc_AesGcmEncryptUpdate(&e_gcm, sram_buffer + clear_bytes, in_buffer + i + clear_bytes, remaining_bytes, NULL, 0);
@@ -332,7 +330,7 @@ KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
             }
         }
 
-        // write the page
+        // Write the page
         if(is_dest_flash) {
             flash_simple_erase_page((uint32_t)(out_buffer+i));
             flash_simple_write((uint32_t)(out_buffer+i), sram_buffer, len);
@@ -341,11 +339,11 @@ KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
         }
     }
 
-    // ensure sram memory is cleared
+    // Ensure sram memory is cleared
     memset(sram_buffer, 0x00, FLASH_PAGE_SIZE);
     __asm__ volatile("" ::: "memory"); \
 
-    // finalize encryption or verify decryption
+    // Finalize encryption or verify decryption
     if (mode == XFORM_ENC) {
         int ret = wc_AesGcmEncryptFinal(&e_gcm, tag, AESGCM_TAG_SIZE);
         if(ret < 0) return AES_ENCRYPT_ERR;
@@ -654,9 +652,6 @@ KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid) {
     ret = erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
     if (ret != 0) return INTERNAL_ERR;
 
-    uint16_t size_param = FILE_TOTAL_SIZE(src->contents_len);
-    print_debug("size param:"); 
-    print_hex_debug(&size_param, sizeof(uint16_t));
     // Encrypt for local storage (the resulting file header will be missing the iv and tag values)
     ret = copy_with_transform((uint8_t *)src, (uint8_t *)&k_curr_file,
                           (uint8_t *)key, XFORM_ENC,
@@ -677,8 +672,6 @@ KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid) {
     // Write the modified first page back out to flash so that contents can be decrypted and verified later
     flash_simple_erase_page((uint32_t)&k_curr_file);
     flash_simple_write((uint32_t)&k_curr_file, copy_buffer, FLASH_PAGE_SIZE);
-    print_debug("page to be written:");
-    print_hex_debug(&k_curr_file, FLASH_PAGE_SIZE);
     ret = write_file(slot, &k_curr_file, uuid);
     if (ret != 0) return ret;
 
@@ -800,7 +793,6 @@ KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce) {
 */
 KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_ptr) {
     int ret = -1;
-
     receive_request_t *request = (receive_request_t *)request_ptr;
     receive_response_enc_t *response = (receive_response_enc_t *)response_ptr;        
     
@@ -808,7 +800,6 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
     if (request_ptr == NULL || response_ptr == NULL) return INTERNAL_ERR;
     slot_t slot = request->slot;       
     if (slot < 0 || slot > 7) return READ_ERR;
-    print_debug("Validated inputs");
 
     // Calculate signature of the request permissions for verification
     uint8_t permissions_sig[HMAC_SIZE];
@@ -816,15 +807,10 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
     wc_HmacSetKey(&hmac, WC_SHA256, (void *)aes_128_shared_key, AESGCM_KEY_SIZE);
     wc_HmacUpdate(&hmac, (void *)request->permissions, sizeof(group_permission_t) * MAX_PERMS);
     wc_HmacFinal(&hmac, (void *)permissions_sig);
-    print_debug("Calculated signature");
 
     // Do the verification
-    print_hex_debug(permissions_sig, sizeof(permissions_sig));
-    print_hex_debug(request->permissions_sig, sizeof(permissions_sig));
     ret = ConstantCompare(permissions_sig, request->permissions_sig, HMAC_SIZE) ^ 0xA5A5A5A5;
-    print_debug("Compared constant");
     EQ_CHECK_BARRIER(ret&0xFFFFFFFFu, 0xA5A5A5A5u, HMAC_ERR);
-    print_debug("Verified signature");
     
     // Read the local file header, check against the verified permissions
     file_header_t f_header;
@@ -833,7 +819,6 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
     }
     SECURE_CAP_CHECK(CAP_SEND);
     SECURE_PERM_CHECK(f_header.group_id, C_PERMISSION, request->permissions);
-    print_debug("Checked permissions");
 
     // Derive local_key for decryption
     uint8_t local_nonce[sizeof(file_header_t) + UUID_SIZE + 16] = {0};
@@ -849,58 +834,41 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
                      (uint8_t *)key);
     if (ret != 0) return ret;
 
-    print_debug("slot:");
-    print_hex_debug(&slot, sizeof(slot_t));
-    print_debug("uuid:");
-    print_hex_debug(uuid, UUID_SIZE);
-    print_debug("key:");
-    print_hex_debug(key, UUID_SIZE);
-
     // Clear enough memory for this file at k_curr_file and k_curr_file_b
     ret = erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
     if (ret != 0) return ret;
     ret = erase_scratchpad_pages((uint32_t)&k_curr_file_b, sizeof(file_t));
     if (ret != 0) return ret;
-    print_debug("Cleared memory");
 
-    // Perform local decrypt, offset for uuid prefix in the next code block
+    // Perform local decrypt with offset for uuid prefix
     uint8_t iv_buffer[AESGCM_IV_SIZE] = {0};
     uint8_t tag_buffer[AESGCM_TAG_SIZE] = {0};
     memcpy(iv_buffer, f_header.aes_gcm_iv, AESGCM_IV_SIZE);
     memcpy(tag_buffer, f_header.aes_gcm_tag, AESGCM_TAG_SIZE);
     ret = read_file(slot, &k_curr_file);
     if (ret != 0) return ret;
-    print_debug("Read encrypted file");
     ret = copy_with_transform((uint8_t *)&k_curr_file, ((uint8_t *)&k_curr_file_b) + UUID_SIZE,
                               (uint8_t *)key, XFORM_DEC,
                               (uint8_t *)tag_buffer, (uint8_t *)iv_buffer,
                               FILE_TOTAL_SIZE(k_curr_file.contents_len), sizeof(file_header_t),
                               true);
     if (ret != 0) return ret;
-    print_debug("Decrypted local");
 
     // Clear ciphertext
     ret = erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
     if (ret != 0) return ret;
-    print_debug("Erased ciphertext scratchpad");
-
-    print_debug("page to be transferred:");
-    print_hex_debug(&k_curr_file_b, FLASH_PAGE_SIZE);
 
     // Stage uuid before plaintext for transfer encrypt
     ret = flash_simple_write((uint32_t)&k_curr_file_b, (void *)FILE_ALLOCATION_TABLE[slot].uuid, UUID_SIZE);
     if (ret != 0) return ret;
-    print_debug("Staged plaintext");
-
-    print_debug("staged page to be transferred:");
-    print_hex_debug(&k_curr_file_b, FLASH_PAGE_SIZE);
 
     // Derive temporary key for transfer encrypt (new nonce + request nonce + context)
     uint8_t temp_nonce[NONCE_SIZE * 2 + 16] = {0};
 
     // New nonce
     uint8_t random_bytes[NONCE_SIZE];
-    generate_random_bytes(random_bytes, NONCE_SIZE);
+    ret = generate_random_bytes(random_bytes, NONCE_SIZE);
+    if (ret != 0) return ret;
 
     // Combine with request nonce and derive transfer key
     join_bytes((uint8_t *)temp_nonce, (uint8_t *)random_bytes, (uint32_t)NONCE_SIZE,
@@ -911,9 +879,6 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
                      (uint8_t *)temp_nonce, sizeof(temp_nonce),
                      (uint8_t *)key);
     if (ret != 0) return ret;
-    print_debug("Derived transfer key:");
-    print_hex_debug(key, AESGCM_KEY_SIZE);
-    print_hex_debug(temp_nonce, NONCE_SIZE * 2 + 16);
 
     // Perform transfer encrypt
     file_t *file = (file_t *)(((uint8_t *)&k_curr_file_b) + UUID_SIZE); 
@@ -924,17 +889,13 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
                               response->data_len, 0,
                               false);
     if (ret != 0) return ret;
-    print_debug("Encrypted for transfer");
-
-    print_debug("ciphertext page to be transferred:");
-    print_hex_debug(&(response->data), FLASH_PAGE_SIZE);
 
     // Set response metadata fields 
     memcpy(response->nonce, temp_nonce, NONCE_SIZE);
     memcpy(response->iv, iv_buffer, AESGCM_IV_SIZE);
     memcpy(response->tag, tag_buffer, AESGCM_TAG_SIZE);
-    if (erase_scratchpad_pages((uint32_t)&k_curr_file_b, sizeof(file_t)) < 0) return INTERNAL_ERR;
-    print_debug("Set metadata");
+    ret = erase_scratchpad_pages((uint32_t)&k_curr_file_b, sizeof(file_t));
+    if (ret != 0) return ret;
     
     // Clean up memory
     memset(local_nonce, 0, sizeof(local_nonce));
@@ -943,8 +904,8 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
     memset(iv_buffer, 0, AESGCM_IV_SIZE);
     memset(tag_buffer, 0, AESGCM_TAG_SIZE);
     memset(key, 0, AESGCM_KEY_SIZE);
+    memset(uuid, 0, UUID_SIZE);
     __asm__ volatile("" ::: "memory");
-    print_debug("Cleared memory");
 
     return ret;
 }
@@ -965,13 +926,11 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
 */
 KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req_nonce, slot_t slot) {
     int ret = -1;
-
     receive_response_enc_t *response = (receive_response_enc_t *)response_ptr;
     
     // Validate inputs
     if (response_ptr == NULL || req_nonce == NULL) return INTERNAL_ERR;
     if (slot < 0 || slot > 7) return RECEIVE_ERR;
-    print_debug("Validated inputs");
     
     // Derive temporary key for transfer decrypt (response nonce + request nonce + context)
     uint8_t temp_nonce[NONCE_SIZE * 2 + 16] = {0};
@@ -986,14 +945,10 @@ KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req
                      (uint8_t *)temp_nonce, sizeof(temp_nonce),
                      (uint8_t *)key);
     if (ret != 0) return ret;
-    print_debug("Derived transfer key:");
-    print_hex_debug(key, AESGCM_KEY_SIZE);
-    print_hex_debug(temp_nonce, NONCE_SIZE * 2 + 16);
 
     // Clear enough memory for this file at k_curr_file
     ret = erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
     if (ret != 0) return ret;
-    print_debug("Cleared scratchpad space");
 
     // Perform transfer decrypt
     uint8_t iv_buffer[AESGCM_IV_SIZE] = {0};
@@ -1006,16 +961,11 @@ KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req
                               response->data_len, 0,
                               true);
     if (ret != 0) return ret;
-    print_debug("Decrypted transferred file");
-
-    print_debug("received file page:");
-    print_hex_debug(&k_curr_file, FLASH_PAGE_SIZE);
 
     // Read the incoming file header, check permission
     file_t *file = (file_t *)(((uint8_t *)&k_curr_file) + UUID_SIZE); 
     SECURE_CAP_CHECK(CAP_RECEIVE);
     SECURE_PERM_CHECK(file->group_id, C_PERMISSION, global_permissions);
-    print_debug("Checked permissions");
 
     // Derive local_key for encryption
     uint32_t headers_len = offsetof(file_t, aes_gcm_iv);
@@ -1028,17 +978,12 @@ KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req
                      (uint8_t *)local_nonce, sizeof(local_nonce),
                      (uint8_t *)key);
     if (ret != 0) return ret;
-    print_debug("Derived local key");
 
     // Clear enough memory for this file at k_curr_file_b
     ret = erase_scratchpad_pages((uint32_t)&k_curr_file_b, sizeof(file_t));
     if (ret != 0) return ret;
     __asm__ volatile("" ::: "memory");
-    print_debug("Cleared scratchpad space");
 
-    uint16_t size_param = response->data_len - UUID_SIZE;
-    print_debug("size param:"); 
-    print_hex_debug(&size_param, sizeof(uint16_t));
     // Perform local encrypt
     ret = copy_with_transform((uint8_t *)file, (uint8_t *)&k_curr_file_b,
                               (uint8_t *)key, XFORM_ENC,
@@ -1046,53 +991,41 @@ KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req
                               response->data_len - UUID_SIZE, sizeof(file_header_t),
                               true);
     if (ret != 0) return ret;
-    print_debug("Did local encrypt");
-    print_debug("ciphertext page:");
-    print_hex_debug(&k_curr_file_b, FLASH_PAGE_SIZE);
 
     // Copy uuid, then delete plaintext
     uint8_t uuid[UUID_SIZE] = {0};
     memcpy(uuid, &k_curr_file, UUID_SIZE);
-    erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
+    ret = erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
+    if (ret != 0) return ret;
 
     // Copy the first page of ciphertext from flash to ram
     uint8_t copy_buffer[FLASH_PAGE_SIZE] = {0};
     memcpy(copy_buffer, &k_curr_file_b, FLASH_PAGE_SIZE);
-    print_debug("Copied first page to ram");
 
     // Store the iv and tag in the ram copy's file header
     memcpy(((file_header_t *)copy_buffer)->aes_gcm_iv, iv_buffer, AESGCM_IV_SIZE);
     memcpy(((file_header_t *)copy_buffer)->aes_gcm_tag, tag_buffer, AESGCM_TAG_SIZE);
     __asm__ volatile("" ::: "memory");
-    print_debug("Stored iv and tag");
 
     // Write the modified first page back out to flash so that contents can be decrypted and verified later
-    flash_simple_erase_page((uint32_t)&k_curr_file_b);
-    
-    print_debug("slot:");
-    print_hex_debug(&slot, sizeof(slot_t));
-    print_debug("uuid:");
-    print_hex_debug(uuid, UUID_SIZE);
-    print_debug("key:");
-    print_hex_debug(key, UUID_SIZE);
+    ret = flash_simple_erase_page((uint32_t)&k_curr_file_b);
+    if (ret != 0) return ret;
+    ret = flash_simple_write((uint32_t)&k_curr_file_b, copy_buffer, FLASH_PAGE_SIZE);
+    if (ret != 0) return ret;
 
-    flash_simple_write((uint32_t)&k_curr_file_b, copy_buffer, FLASH_PAGE_SIZE);
-    print_debug("Wrote modified page");
-    print_debug("ciphertext page:");
-    print_hex_debug(&k_curr_file_b, FLASH_PAGE_SIZE);
+    // Write the file
     ret = write_file(slot, &k_curr_file_b, uuid);
     if (ret != 0) return ret;
-    print_debug("Wrote local file");
 
     // Clean up memory
-    erase_scratchpad_pages((uint32_t)&k_curr_file_b, sizeof(file_t));
+    ret = erase_scratchpad_pages((uint32_t)&k_curr_file_b, sizeof(file_t));
     memset(local_nonce, 0, sizeof(local_nonce));
     memset(temp_nonce, 0, sizeof(temp_nonce));
     memset(iv_buffer, 0, AESGCM_IV_SIZE);
     memset(tag_buffer, 0, AESGCM_TAG_SIZE);
     memset(key, 0, AESGCM_KEY_SIZE);
+    memset(uuid, 0, UUID_SIZE);
     __asm__ volatile("" ::: "memory");
-    print_debug("Cleared all memory");
 
     return ret;
 }
