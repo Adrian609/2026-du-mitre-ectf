@@ -643,46 +643,61 @@ KERNEL_CODE int secure_read_file(slot_t slot, file_t *curr_file)
  * @security_req active_cap = CAP_READ_META
  *
  */
-KERNEL_CODE int secure_read_file_meta(void *file_list_ptr)
+KERNEL_CODE int secure_read_file(slot_t slot, file_t *curr_file)
 {
+    int ret = -1;
+    file_header_t f_header;
+    uint32_t headers_len = offsetof(file_t, aes_gcm_iv);
+    uint8_t key[AESGCM_KEY_SIZE] = {0};
+    uint8_t iv_buffer[AESGCM_IV_SIZE] = {0};
+    uint8_t tag_buffer[AESGCM_TAG_SIZE] = {0};
+    uint8_t nonce[sizeof(file_header_t) + UUID_SIZE + 16] = {0};
 
-    list_response_t *file_list = (list_response_t *)file_list_ptr;
+    // Validate inputs
+    if (curr_file == NULL)
+        return INTERNAL_ERR;
+    if (slot < 0 || slot > 7)
+        return READ_ERR;
 
-    if (file_list_ptr == NULL)
+    // Read the file header, check permission
+    if (read_file_metadata(slot, &f_header) < 0)
+    {
+        return READ_META_ERR;
+    }
+    SECURE_CAP_CHECK(CAP_READ);
+    SECURE_PERM_CHECK(f_header.group_id, R_PERMISSION, global_permissions);
+
+    // Prepare nonce bytes, derive key
+    join_bytes((uint8_t *)nonce, (uint8_t *)&f_header, (uint32_t)headers_len,
+               (uint8_t *)FILE_ALLOCATION_TABLE[slot].uuid, (uint32_t)UUID_SIZE,
+               (uint8_t *)LOCAL_LABEL_FILE, (uint32_t)strlen(LOCAL_LABEL_FILE),
+               NULL);
+    ret = create_key((uint8_t *)aes_128_shared_key,
+                     (uint8_t *)nonce, sizeof(nonce),
+                     (uint8_t *)key);
+    if (ret != 0)
         return INTERNAL_ERR;
 
-    // No specific permissions checked here but active capability
-    // must be equal to required capability
-    SECURE_CAP_CHECK(CAP_READ_META);
+    // Decrypt and check integrity
+    memcpy(iv_buffer, f_header.aes_gcm_iv, AESGCM_IV_SIZE);
+    memcpy(tag_buffer, f_header.aes_gcm_tag, AESGCM_TAG_SIZE);
+    read_file(slot, &k_curr_file);
+    ret = copy_with_transform((uint8_t *)&k_curr_file, (uint8_t *)curr_file,
+                              (uint8_t *)key, XFORM_DEC,
+                              (uint8_t *)tag_buffer, (uint8_t *)iv_buffer,
+                              FILE_TOTAL_SIZE(k_curr_file.contents_len), sizeof(file_header_t),
+                              false);
 
-    /** Begin operation **/
+    // Clean up memory
+    memset(iv_buffer, 0, AESGCM_IV_SIZE);
+    memset(tag_buffer, 0, AESGCM_TAG_SIZE);
+    memset(key, 0, AESGCM_KEY_SIZE);
+    __asm__ volatile("" ::: "memory");
+    erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
+    if (ret != 0)
+        return INTERNAL_ERR;
 
-    file_header_t header;
-    file_list->n_files = 0;
-
-    // Loop through all files on the system
-    for (uint8_t i = 0; i < MAX_FILE_COUNT; i++)
-    {
-
-        // Read file metadata
-        if (read_file_metadata(i, &header) < 0)
-        {
-            continue; // nothing in slot i
-        }
-
-        // If the file is in use, populate response
-        if (header.in_use == FILE_IN_USE)
-        {
-            file_list->metadata[file_list->n_files].slot = i;
-            file_list->metadata[file_list->n_files].group_id = header.group_id;
-
-            strncpy(file_list->metadata[file_list->n_files].name,
-                    (char *)&header.name, MAX_NAME_SIZE);
-            file_list->n_files++;
-        }
-    }
-
-    return 0;
+    return ret;
 }
 
 /** @brief Write a file after encryption
