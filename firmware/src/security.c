@@ -380,7 +380,7 @@ KERNEL_CODE int copy_with_transform(uint8_t *in_buffer, uint8_t *out_buffer,
         if (is_dest_flash)
         {
             flash_simple_erase_page((uint32_t)(out_buffer + i));
-            flash_simple_write((uint32_t)(out_buffer + i), sram_buffer, len);
+            flash_simple_write((uint32_t)(out_buffer + i), sram_buffer, n);
         }
         else
         {
