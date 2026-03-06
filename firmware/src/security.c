@@ -154,7 +154,6 @@ KERNEL_DATA WOLFSSL_HEAP_HINT *p_d_hint = NULL;
  */
 KERNEL_CODE void init_security()
 {
-
     // Init encryption engine
     memset(&e_gcm, 0, sizeof(Aes));
     memset(wolfssl_e_heap, 0, WOLFSSL_STATIC_MEM_SIZE);
@@ -239,7 +238,6 @@ KERNEL_CODE void join_bytes(uint8_t *out, ...)
  */
 KERNEL_CODE int erase_scratchpad_pages(uint32_t address, uint32_t size)
 {
-
     // Address must be page aligned
     if (address % FLASH_PAGE_SIZE != 0)
         return -1;
@@ -513,7 +511,6 @@ KERNEL_CODE int copy_meta_if_C_permitted(file_metadata_t *dest, file_metadata_t 
  */
 KERNEL_CODE int secure_check_pin(msg_type_t cmd, unsigned char *pin)
 {
-
     if (cmd == LISTEN_MSG)
     { // pin not required for listen command
         active_cap = CMD_TO_CAP_MAP[LISTEN_MSG];
@@ -708,7 +705,6 @@ KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid)
  */
 KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr)
 {
-
     list_response_enc_t *file_list_transfer = (list_response_enc_t *)file_list_ptr;
     list_response_t k_file_list;
 
@@ -747,7 +743,6 @@ KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr)
                 if (global_permissions[j].group_id == header.group_id &&
                     global_permissions[j].write == W_PERMISSION)
                 {
-
                     k_file_list.metadata[k_file_list.n_files].slot = i;
                     k_file_list.metadata[k_file_list.n_files].group_id = header.group_id;
 
@@ -778,17 +773,12 @@ KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr)
  */
 KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce)
 {
-
     list_response_enc_t *file_list_transfer = (list_response_enc_t *)file_list_ptr;
-
     list_response_t k_file_list;
 
     uint8_t key[AESGCM_KEY_SIZE] = {0};
-
     uint8_t iv_buffer[AESGCM_IV_SIZE] = {0};
-
     uint8_t tag_buffer[AESGCM_TAG_SIZE] = {0};
-
     uint8_t local_nonce[NONCE_SIZE + NONCE_SIZE + 16] = {0};
 
     int ret = -1;
@@ -803,46 +793,33 @@ KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce)
     // Derive key using nonce and shared secret
 
     join_bytes((uint8_t *)local_nonce,
-
                (uint8_t *)nonce, (uint32_t)NONCE_SIZE,
-
                (uint8_t *)file_list_transfer->nonce, (uint32_t)NONCE_SIZE,
-
                (uint8_t *)TRANSFER_LABEL_FILE, (uint32_t)strlen(TRANSFER_LABEL_FILE),
-
                NULL);
 
     ret = create_key((uint8_t *)aes_128_shared_key,
-
                      (uint8_t *)local_nonce, kdf_len,
-
                      (uint8_t *)key);
 
     if (ret != 0)
     {
-
         return INTERNAL_ERR;
     }
 
     // Decrypt and check integrity
 
     memcpy(iv_buffer, file_list_transfer->iv, AESGCM_IV_SIZE);
-
     memcpy(tag_buffer, file_list_transfer->tag, AESGCM_TAG_SIZE);
 
     ret = copy_with_transform((uint8_t *)&file_list_transfer->data, (uint8_t *)&k_file_list,
-
                               (uint8_t *)key, XFORM_DEC,
-
                               (uint8_t *)tag_buffer, (uint8_t *)iv_buffer,
-
                               sizeof(list_response_t), 0,
-
                               false);
 
     if (ret != 0)
     {
-
         return ret;
     }
 
@@ -850,7 +827,6 @@ KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce)
 
     if (k_file_list.n_files > MAX_FILE_COUNT)
     {
-
         return INTERNAL_ERR;
     }
 
@@ -860,12 +836,10 @@ KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce)
 
     for (uint8_t i = 0; i < k_file_list.n_files; i++)
     {
-
         ret = copy_meta_if_C_permitted(&k_file_list.metadata[out], &k_file_list.metadata[i]);
 
         if (ret == 0)
         {
-
             out++;
 
             continue;
@@ -873,7 +847,6 @@ KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce)
 
         if (ret == PERM_ERR)
         {
-
             ret = 0;
 
             continue;
@@ -891,13 +864,9 @@ KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce)
     // Clean memory
 
     memset(iv_buffer, 0, AESGCM_IV_SIZE);
-
     memset(tag_buffer, 0, AESGCM_TAG_SIZE);
-
     memset(key, 0, AESGCM_KEY_SIZE);
-
     memset(local_nonce, 0, sizeof(local_nonce));
-
     memset(&k_file_list, 0, sizeof(list_response_t));
 
     __asm__ volatile("" ::: "memory");
@@ -919,11 +888,9 @@ KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce)
  */
 KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_ptr)
 {
-
     int ret = -1;
 
     receive_request_t *request = (receive_request_t *)request_ptr;
-
     receive_response_enc_t *response = (receive_response_enc_t *)response_ptr;
 
     // Validate inputs
@@ -943,9 +910,7 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
     Hmac hmac;
 
     wc_HmacSetKey(&hmac, WC_SHA256, (void *)aes_128_shared_key, AESGCM_KEY_SIZE);
-
     wc_HmacUpdate(&hmac, (void *)request->permissions, sizeof(group_permission_t) * MAX_PERMS);
-
     wc_HmacFinal(&hmac, (void *)permissions_sig);
 
     if (memcmp(permissions_sig, request->permissions_sig, HMAC_SIZE) != 0)
@@ -959,7 +924,6 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
 
     if (read_file_metadata(request->slot, &f_header) < 0)
     {
-
         return READ_META_ERR;
     }
 
@@ -976,17 +940,12 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
     uint8_t local_nonce[sizeof(file_header_t) + UUID_SIZE + 16] = {0};
 
     join_bytes((uint8_t *)local_nonce, (uint8_t *)&f_header, (uint32_t)headers_len,
-
                (uint8_t *)FILE_ALLOCATION_TABLE[slot].uuid, (uint32_t)UUID_SIZE,
-
                (uint8_t *)LOCAL_LABEL_FILE, (uint32_t)strlen(LOCAL_LABEL_FILE),
-
                NULL);
 
     ret = create_key((uint8_t *)aes_128_shared_key,
-
                      (uint8_t *)local_nonce, sizeof(local_nonce),
-
                      (uint8_t *)key);
 
     if (ret != 0)
@@ -1007,23 +966,17 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
     // Perform local decrypt
 
     uint8_t iv_buffer[AESGCM_IV_SIZE] = {0};
-
     uint8_t tag_buffer[AESGCM_TAG_SIZE] = {0};
 
     memcpy(iv_buffer, f_header.aes_gcm_iv, AESGCM_IV_SIZE);
-
     memcpy(tag_buffer, f_header.aes_gcm_tag, AESGCM_TAG_SIZE);
 
     read_file(slot, &k_curr_file);
 
     ret = copy_with_transform((uint8_t *)&k_curr_file, (uint8_t *)&k_curr_file_b,
-
                               (uint8_t *)key, XFORM_DEC,
-
                               (uint8_t *)tag_buffer, (uint8_t *)iv_buffer,
-
                               FILE_TOTAL_SIZE(k_curr_file.contents_len), sizeof(file_header_t),
-
                               true);
 
     erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
@@ -1044,16 +997,12 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
     // Combine with request nonce and derive transfer key
 
     join_bytes((uint8_t *)temp_nonce, (uint8_t *)nonce_buffer, (uint32_t)NONCE_SIZE,
-
                (uint8_t *)request->nonce, (uint32_t)NONCE_SIZE,
-
                (uint8_t *)TRANSFER_LABEL_FILE, (uint32_t)strlen(TRANSFER_LABEL_FILE),
-
                NULL);
+
     ret = create_key((uint8_t *)aes_128_shared_key,
-
                      (uint8_t *)temp_nonce, sizeof(temp_nonce),
-
                      (uint8_t *)key);
 
     if (ret != 0)
@@ -1062,13 +1011,9 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
     // Perform transfer encrypt
 
     ret = copy_with_transform((uint8_t *)&k_curr_file_b, (uint8_t *)&(response->data.file_enc),
-
                               (uint8_t *)key, XFORM_ENC,
-
                               (uint8_t *)tag_buffer, (uint8_t *)iv_buffer,
-
                               FILE_TOTAL_SIZE(k_curr_file_b.contents_len), sizeof(file_header_t),
-
                               false);
 
     erase_scratchpad_pages((uint32_t)&k_curr_file_b, sizeof(file_t));
@@ -1150,9 +1095,7 @@ KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req
                NULL);
 
     ret = create_key((uint8_t *)aes_128_shared_key,
-
                      (uint8_t *)temp_nonce, sizeof(temp_nonce),
-
                      (uint8_t *)key);
 
     if (ret != 0)
@@ -1174,13 +1117,9 @@ KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req
     memcpy(tag_buffer, response->tag, AESGCM_TAG_SIZE);
 
     ret = copy_with_transform((uint8_t *)&(response->data.file_enc), (uint8_t *)&k_curr_file,
-
                               (uint8_t *)key, XFORM_DEC,
-
                               (uint8_t *)tag_buffer, (uint8_t *)iv_buffer,
-
                               FILE_TOTAL_SIZE(response->data.file_enc.contents_len), sizeof(file_header_t),
-
                               true);
 
     if (ret != 0)
