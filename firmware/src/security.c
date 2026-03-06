@@ -691,28 +691,25 @@ KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid) {
  *
 */
 KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr) {
+    if (file_list_ptr == NULL) return INTERNAL_ERR;
 
     list_response_enc_t *file_list_transfer = (list_response_enc_t *)file_list_ptr;
     list_response_t k_file_list;
-                
     int ret = -1;   
-    
-    if (file_list_ptr == NULL) return INTERNAL_ERR;
-    
-    
+    uint8_t key[AESGCM_KEY_SIZE] = {0};
+
     // Active capability must be equal to required capability
     SECURE_CAP_CHECK(CAP_SEND);
-    
     
     // Prepare metadata in internal buffer
     memset(&k_file_list, 0x0, sizeof(list_response_t));    
     k_file_list.n_files = 0;
     
-
     // Loop through all files on the system
     file_header_t header;
-    
+    //Make file metadata array
     for (uint8_t i = 0; i < MAX_FILE_COUNT; i++) {
+
         // Read file metadata
         if (read_file_metadata(i, &header) < 0) {
             continue;  // no file in slot
@@ -720,29 +717,61 @@ KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr) {
     
         // If the file is in use
         if (header.in_use == FILE_IN_USE) {	
-        
-            // Since write permission needed to transfer a file, check if 
-            // write permission is present on group (secure_read_file_for_transfer 
-            // enforces this securely during actual transfer)
-            for (int j=0; j < MAX_PERMS; j++) {
-                if (global_permissions[j].group_id == header.group_id && 
-                    global_permissions[j].write == W_PERMISSION) {
-                
-                    k_file_list.metadata[k_file_list.n_files].slot = i;
-                    k_file_list.metadata[k_file_list.n_files].group_id = header.group_id;
-			
-                    strncpy(k_file_list.metadata[k_file_list.n_files].name, (char *)&header.name, MAX_NAME_SIZE);
-                    k_file_list.n_files++;
-                }
-            }
+            k_file_list.metadata[k_file_list.n_files].slot = i;
+            k_file_list.metadata[k_file_list.n_files].group_id = header.group_id;
+            strncpy(k_file_list.metadata[k_file_list.n_files].name, (char *)&header.name, MAX_NAME_SIZE);
+            k_file_list.n_files++;
         }
     }
+
+    uint8_t nonce_a[NONCE_SIZE] = {0};
+
+    // Get nonce A from passed file_list_ptr struct
+    memcpy(nonce_a, file_list_transfer->nonce, NONCE_SIZE);
+    uint8_t nonce_b[NONCE_SIZE] = {0};
+
+    // Create nonce B bytes, join with rest
+    uint32_t kdf_len = (NONCE_SIZE + NONCE_SIZE + 16); 
+    uint8_t kdf_nonce[NONCE_SIZE + NONCE_SIZE + 32] = {0};  
+    ret = generate_random_bytes(nonce_b, NONCE_SIZE);
+    if (ret != 0) return ret;
+
+    // Store nonce in response
+    memcpy(file_list_transfer->nonce, nonce_b, NONCE_SIZE);
+
+    // Create main KDF nonce nonce_A || nonce_B || label
+    join_bytes((uint8_t *)kdf_nonce,
+               (uint8_t *)nonce_a, (uint32_t)NONCE_SIZE,
+               (uint8_t *)nonce_b, (uint32_t)NONCE_SIZE,
+               (uint8_t *)TRANSFER_LABEL_FILE, (uint32_t)strlen(TRANSFER_LABEL_FILE),
+               NULL);
+
+    // Derive key
+    ret = create_key((uint8_t *)aes_128_shared_key,
+                     (uint8_t *)kdf_nonce, kdf_len,
+                     (uint8_t *)key);
+    if (ret != 0) return ret;
+
+    // Set data len
+    file_list_transfer->data_len = sizeof(list_response_t);
+
+    // Encrypt for transfer
+    ret = copy_with_transform((uint8_t *)&k_file_list, (uint8_t *)&file_list_transfer->data,
+                          (uint8_t *)key, XFORM_ENC,
+                          (uint8_t *)&file_list_transfer->tag, (uint8_t *)&file_list_transfer->iv,
+                          sizeof(list_response_t), 0,
+                          false);
+    if (ret != 0) return ret;
     
-    // TODO: need to create a session key, encrypt the data, and put in user buffer
-    
-    	    
-	return -1;
-    
+    //Clean memory
+    memset(key, 0, AESGCM_KEY_SIZE);
+    memset(nonce_a, 0, NONCE_SIZE);
+    memset(nonce_b, 0, NONCE_SIZE);
+    memset(kdf_nonce, 0, kdf_len);
+    memset(&k_file_list, 0, sizeof(list_response_t));
+    __asm__ volatile("" ::: "memory");
+        
+	return 0; 
 }
 
 
@@ -763,19 +792,72 @@ KERNEL_CODE int secure_filter_file_meta(void *file_list_ptr, uint8_t *nonce) {
     list_response_enc_t *file_list_transfer = (list_response_enc_t *)file_list_ptr;
     list_response_t k_file_list;
     uint8_t key[AESGCM_KEY_SIZE] = {0};
-    
+    uint8_t iv_buffer[AESGCM_IV_SIZE] = {0};
+    uint8_t tag_buffer[AESGCM_TAG_SIZE] = {0};
+    uint8_t local_nonce[NONCE_SIZE + NONCE_SIZE + 16] = {0};
+    uint32_t kdf_len = (uint32_t)(NONCE_SIZE + NONCE_SIZE + 16);
     int ret = -1;
-   
-   
+
     if (file_list_ptr == NULL || nonce == NULL) return INTERNAL_ERR;
+
+    SECURE_CAP_CHECK(CAP_FILTER_META);
+
+    // Derive key using nonce and shared secret
+    join_bytes((uint8_t *)local_nonce,
+               (uint8_t *)nonce, (uint32_t)NONCE_SIZE,
+               (uint8_t *)file_list_transfer->nonce, (uint32_t)NONCE_SIZE,
+               (uint8_t *)TRANSFER_LABEL_FILE, (uint32_t)strlen(TRANSFER_LABEL_FILE),
+               NULL);
+
+    ret = create_key((uint8_t *)aes_128_shared_key,
+                     (uint8_t *)local_nonce, kdf_len,
+                     (uint8_t *)key);
+    if (ret != 0) return ret;
+
+    // Decrypt and check integrity
+    memcpy(iv_buffer, file_list_transfer->iv, AESGCM_IV_SIZE);
+    memcpy(tag_buffer, file_list_transfer->tag, AESGCM_TAG_SIZE);
+    ret = copy_with_transform((uint8_t *)&file_list_transfer->data, (uint8_t *)&k_file_list,
+                              (uint8_t *)key, XFORM_DEC,
+                              (uint8_t *)tag_buffer, (uint8_t *)iv_buffer,
+                              sizeof(list_response_t), 0,
+                              false);
+    if (ret != 0) return ret;
+
+    // Check that file list isn't bigger than maximum size
+    if (k_file_list.n_files > MAX_FILE_COUNT){
+        return INTERNAL_ERR;
+    }
+
+    // Iterate through array of stored file metadata and determine which ones match permissions
+    uint8_t out = 0;
+    for (uint8_t i = 0; i < k_file_list.n_files; i++) {
+        ret = copy_meta_if_C_permitted(&k_file_list.metadata[out], &k_file_list.metadata[i]);
+
+        if (ret == 0) {
+            out++;
+            continue;
+        } else if (ret == PERM_ERR) {
+            continue;
+        } else {
+            return ret;
+        }
+    }
+
+    k_file_list.n_files = out;
+    int filtered_size = sizeof(uint32_t) + out * sizeof(file_metadata_t);
+    memcpy(&file_list_transfer->data, &k_file_list, filtered_size);
+    file_list_transfer->data_len = filtered_size;
+
+    // Clean memory
+    memset(iv_buffer, 0, AESGCM_IV_SIZE);
+    memset(tag_buffer, 0, AESGCM_TAG_SIZE);
+    memset(key, 0, AESGCM_KEY_SIZE);
+    memset(local_nonce, 0, sizeof(local_nonce));
+    memset(&k_file_list, 0, sizeof(list_response_t));
+    __asm__ volatile("" ::: "memory");
     
-    
-    // TODO: need to check capability, create session key, decrypt received data, filter
-    // the list based on permission, and put result in user buffer
-    
-    
-	
-    return -1;
+    return 0;
 }
 
 
