@@ -790,6 +790,61 @@ KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr) {
     
 }
 
+
+/** @brief Prepare a list of file metadata and provide to local user
+ *
+ * @param file_list_ptr: user buffer to return the file list
+ *
+ * @return 0 on success, negative number on error
+ *
+ * @note Runs for LIST command
+ *
+ * @security_req active_cap = CAP_READ_META
+ *
+ */
+KERNEL_CODE int secure_read_file_meta(void *file_list_ptr)
+{
+
+    list_response_t *file_list = (list_response_t *)file_list_ptr;
+
+    if (file_list_ptr == NULL)
+        return INTERNAL_ERR;
+
+    // No specific permissions checked here but active capability
+    // must be equal to required capability
+    SECURE_CAP_CHECK(CAP_READ_META);
+
+    /** Begin operation **/
+
+    file_header_t header;
+    file_list->n_files = 0;
+
+    // Loop through all files on the system
+    for (uint8_t i = 0; i < MAX_FILE_COUNT; i++)
+    {
+
+        // Read file metadata
+        if (read_file_metadata(i, &header) < 0)
+        {
+            continue; // nothing in slot i
+        }
+
+        // If the file is in use, populate response
+        if (header.in_use == FILE_IN_USE)
+        {
+            file_list->metadata[file_list->n_files].slot = i;
+            file_list->metadata[file_list->n_files].group_id = header.group_id;
+
+            strncpy(file_list->metadata[file_list->n_files].name,
+                    (char *)&header.name, MAX_NAME_SIZE);
+            file_list->n_files++;
+        }
+    }
+
+    return 0;
+}
+
+
 /** @brief Filter received list of encrypted file metadata and provide to local user
  *
  * @param file_list_ptr: user buffer with encrypted file metadata
