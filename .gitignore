@@ -56,6 +56,7 @@
 !firmware/inc/kernel.h
 !firmware/Makefile
 !firmware/build.sh
-
+!docs/
+!docs/security_c_manual_test_plan.md
 
 
