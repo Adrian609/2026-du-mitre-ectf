@@ -703,59 +703,91 @@ KERNEL_CODE int secure_write_file(slot_t slot, file_t *src, uint8_t *uuid)
  * @security_req active_cap = CAP_SEND and W permission on reported files
  *
  */
-KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr)
-{
+KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr) {
+
     list_response_enc_t *file_list_transfer = (list_response_enc_t *)file_list_ptr;
     list_response_t k_file_list;
-
-    int ret = -1;
-
-    if (file_list_ptr == NULL)
-        return INTERNAL_ERR;
+                
+    int ret = -1;   
+    
+    if (file_list_ptr == NULL) return INTERNAL_ERR;
+    
+    uint8_t key[AESGCM_KEY_SIZE] = {0};
 
     // Active capability must be equal to required capability
     SECURE_CAP_CHECK(CAP_SEND);
-
+    
+    
     // Prepare metadata in internal buffer
-    memset(&k_file_list, 0x0, sizeof(list_response_t));
+    memset(&k_file_list, 0x0, sizeof(list_response_t));    
     k_file_list.n_files = 0;
-
+    
     // Loop through all files on the system
     file_header_t header;
-
-    for (uint8_t i = 0; i < MAX_FILE_COUNT; i++)
-    {
+    //Make file metadata array
+    for (uint8_t i = 0; i < MAX_FILE_COUNT; i++) {
         // Read file metadata
-        if (read_file_metadata(i, &header) < 0)
-        {
-            continue; // no file in slot
+        if (read_file_metadata(i, &header) < 0) {
+            continue;  // no file in slot
         }
-
+    
         // If the file is in use
-        if (header.in_use == FILE_IN_USE)
-        {
+        if (header.in_use == FILE_IN_USE) {	
 
-            // Since write permission needed to transfer a file, check if
-            // write permission is present on group (secure_read_file_for_transfer
-            // enforces this securely during actual transfer)
-            for (int j = 0; j < MAX_PERMS; j++)
-            {
-                if (global_permissions[j].group_id == header.group_id &&
-                    global_permissions[j].write == W_PERMISSION)
-                {
-                    k_file_list.metadata[k_file_list.n_files].slot = i;
-                    k_file_list.metadata[k_file_list.n_files].group_id = header.group_id;
-
-                    strncpy(k_file_list.metadata[k_file_list.n_files].name, (char *)&header.name, MAX_NAME_SIZE);
-                    k_file_list.n_files++;
-                }
-            }
+            k_file_list.metadata[k_file_list.n_files].slot = i;
+            k_file_list.metadata[k_file_list.n_files].group_id = header.group_id;
+			
+            strncpy(k_file_list.metadata[k_file_list.n_files].name, (char *)&header.name, MAX_NAME_SIZE);
+            k_file_list.n_files++;
         }
+            
     }
+    uint8_t nonce_a[NONCE_SIZE] = {0};
+    //Get nonce A from passed file_list_ptr struct
+    memcpy(nonce_a, file_list_transfer->nonce, NONCE_SIZE);
+    uint8_t nonce_b[NONCE_SIZE] = {0};
+    //Create nonce B bytes, derive key
+    ret = generate_random_bytes(nonce_b, NONCE_SIZE);
+    if (ret != 0) return INTERNAL_ERR;
 
-    // TODO: need to create a session key, encrypt the data, and put in user buffer
+    memcpy(file_list_transfer->nonce, nonce_b, NONCE_SIZE);
 
-    return -1;
+    uint32_t kdf_len = (NONCE_SIZE + NONCE_SIZE + 16); 
+    uint8_t kdf_nonce[NONCE_SIZE + NONCE_SIZE + 32] = {0};  
+
+    //create main KDF nonce nonce_A || nonce_B || label
+    join_bytes((uint8_t *)kdf_nonce,
+               (uint8_t *)nonce_a, (uint32_t)NONCE_SIZE,
+               (uint8_t *)nonce_b, (uint32_t)NONCE_SIZE,
+               (uint8_t *)TRANSFER_LABEL_FILE, (uint32_t)strlen(TRANSFER_LABEL_FILE),
+               NULL);
+
+    ret = create_key((uint8_t *)aes_128_shared_key,
+                     (uint8_t *)kdf_nonce, kdf_len,
+                     (uint8_t *)key);
+    if (ret != 0) return INTERNAL_ERR;
+    //set data len
+    file_list_transfer->data_len = sizeof(list_response_t);
+    // Encrypt for transfer
+    ret = copy_with_transform((uint8_t *)&k_file_list, (uint8_t *)&file_list_transfer->data,
+                          (uint8_t *)key, XFORM_ENC,
+                          (uint8_t *)&file_list_transfer->tag, (uint8_t *)&file_list_transfer->iv,
+                          sizeof(list_response_t), 0,
+                          false);
+    if (ret != 0){
+        return ret;
+    } 
+    
+    //Clean memory
+    memset(key, 0, AESGCM_KEY_SIZE);
+    memset(nonce_a, 0, NONCE_SIZE);
+    memset(nonce_b, 0, NONCE_SIZE);
+    memset(kdf_nonce, 0, kdf_len);
+    memset(&k_file_list, 0, sizeof(list_response_t));
+    __asm__ volatile("" ::: "memory");
+        
+	return 0;
+    
 }
 
 /** @brief Filter received list of encrypted file metadata and provide to local user
