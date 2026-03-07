@@ -99,7 +99,7 @@ KERNEL_CODE int write_file(slot_t slot, file_t *src, uint8_t *uuid) {
     flash_addr = FILE_START_PAGE_FROM_SLOT(slot);
     file_size = FILE_TOTAL_SIZE(src->contents_len);
     
-    if (file_size > MAX_CONTENTS_SIZE) return -1;
+    if (src->contents_len > MAX_CONTENTS_SIZE) return -1;
     
     // Update the FAT for the new file
     memcpy(&FILE_ALLOCATION_TABLE[slot].uuid, uuid, UUID_SIZE);
