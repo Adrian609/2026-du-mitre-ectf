@@ -14,37 +14,76 @@
 #include "host_messaging.h"
 #include "commands.h"
 #include "filesystem.h"
+#include "syscalls.h"
 
-/* IMPORTANT COMPONENTS FROM HSM.c */
-// extern file_t hsm_status[MAX_FILE_COUNT];
-static file_t current_file;
+
+extern unsigned char uart_buf[MAX_MSG_SIZE];  // from HSM.c
+extern const volatile group_permission_t global_permissions[MAX_PERMS]; // from secrets.h
+extern group_permission_t global_permissions_u[MAX_PERMS]; // from security.c
+extern uint8_t global_permissions_sig[HMAC_SIZE]; // from security.c
+
 
 /**********************************************************
  ******************** HELPER FUNCTIONS ********************
  **********************************************************/
 
-/** @brief List out the files on the system.
- *      To be utilized by list and interrogate
+/** @brief Print error based on code
  *
- *  @param file_list A pointer to the list_response_t variable in
- *      which to store the results
- */
-void generate_list_files(list_response_t *file_list) {
-    file_list->n_files = 0;
-    file_t temp_file;
+ *  @param error_code: the error code (see commands.h)
+ *
+ *  @return 0 if no error, else -1
+ *
+ *  @note see ERR_CHECK macro in commands.h
+ *
+*/
+int check_for_errors(int error_code) {
+	if (error_code >= 0) return 0;
 
-    // Loop through all files on the system
-    for (uint8_t i = 0; i < MAX_FILE_COUNT; i++) {
-        // Check if the file is in use
-        if (is_slot_in_use(i)) {
-            read_file(i, &temp_file);
-
-            file_list->metadata[file_list->n_files].slot = i;
-            file_list->metadata[file_list->n_files].group_id = temp_file.group_id;
-            strcpy(file_list->metadata[file_list->n_files].name, (char *)&temp_file.name);
-            file_list->n_files++;
-        }
+    // TODO: Instead of descriptive errors, just return a generic error 
+    //      like "HSM failed with an error"
+    
+	switch (error_code) {
+        case UNKNOWN_ERR:
+            print_error("Unknown error");
+            break;
+        case PIN_ERR:
+            print_error("Invalid PIN");
+            break;
+        case PERM_ERR:
+            print_error("Permission failure");
+            break;
+        case READ_ERR:
+            print_error("Failed to read file");
+            break;
+        case READ_META_ERR:
+            print_error("Failed to read file metadata");
+            break;
+        case WRITE_ERR:
+            print_error("Failed to write file");
+            break;
+        case RECEIVE_ERR:
+            print_error("Failed to receive file");
+            break;
+        case INTERROGATE_ERR:
+            print_error("Failed to receive file metadata");
+            break;
+		case INTERNAL_ERR:
+            print_error("Kernel internal error");
+            break;
+		case AES_ENCRYPT_ERR:
+            print_error("Data encrypt error");
+            break;
+		case AES_DECRYPT_ERR:
+            print_error("Data decrypt error");
+            break;
+		case AES_TAG_ERR:
+            print_error("Data integrity failure");
+            break;
+        default:
+            print_error("Undefined error code");
+            break;
     }
+	return -1;
 }
 
 
@@ -63,17 +102,14 @@ int list(uint16_t pkt_len, uint8_t *buf) {
     list_command_t *command = (list_command_t*)buf;
     list_response_t file_list;
 
+    // Check pin
+    ERR_CHECK(svc_check_pin(LIST_MSG, command->pin)); // lands in secure_check_pin
+
+    // Copy relevant fields into the final struct
     memset(&file_list, 0, sizeof(file_list));
+    ERR_CHECK(svc_read_file_meta(&file_list)); // lands in secure_read_file_meta
 
-    // copy relevant fields into the final struct
-    generate_list_files(&file_list);
-
-    if (!check_pin(command->pin)) {
-        print_error("Invalid pin");
-        return -1;
-    }
-
-    // write success packet with list
+    // Write success packet with list
     pkt_len_t length = LIST_PKT_LEN(file_list.n_files);
     write_packet(CONTROL_INTERFACE, LIST_MSG, &file_list, length);
     return 0;
@@ -92,28 +128,21 @@ int read(uint16_t pkt_len, uint8_t *buf) {
     read_response_t file_info;
     file_t curr_file;
 
-    if (!check_pin(command->pin)) {
-        print_error("Invalid pin");
-        return -1;
-    }
+    // Check pin
+    ERR_CHECK(svc_check_pin(READ_MSG, command->pin)); // lands in secure_check_pin      
 
-    // zeroizing memory is a pretty good practice
+    // Zeroizing memory is a pretty good practice
     memset(&file_info, 0, sizeof(read_response_t));
-
-    if (read_file(command->slot, &curr_file) < 0) {
-        print_error("Failed to read file");
-        return -1;
-    }
-    // copy structure of the persistent file
+        
+    // Read the file
+    ERR_CHECK(svc_read_file(command->slot, &curr_file)); // lands in secure_read_file
+    
+    // Copy structure of the persistent file
     memcpy(file_info.name, &curr_file.name, strlen(curr_file.name));
     memcpy(file_info.contents, &curr_file.contents, curr_file.contents_len);
 
-    if (!validate_permission(curr_file.group_id, PERM_READ)) {
-        print_error("Invalid permission");
-        return -1;
-    }
 
-    // write a success message with the file information
+    // Write a success message with the file information
     pkt_len_t length = MAX_NAME_SIZE + curr_file.contents_len;
     write_packet(CONTROL_INTERFACE, READ_MSG, &file_info, length);
     return 0;
@@ -132,29 +161,22 @@ int write(uint16_t pkt_len, uint8_t *buf) {
     int ret;
     file_t curr_file;
 
-    if (!check_pin(command->pin)) {
-        print_error("Invalid pin");
-        return -1;
-    }
-
-    if (!validate_permission(command->group_id, PERM_WRITE)) {
-        print_error("Invalid permission");
-        return -1;
-    }
-
-    create_file(
+    // Check pin
+    ERR_CHECK(svc_check_pin(WRITE_MSG, command->pin)); // lands in secure_check_pin
+        
+    // Create file object    
+    if (create_file(
         &curr_file,
         command->group_id,
         command->name,
         command->contents_len,
-        command->contents
-    );
-
-    // Store the file persistently
-    if (write_file(command->slot, &curr_file, command->uuid) < 0) {
-        print_error("Error storing file");
+        command->contents) < 0) {
+        print_error("Illegal name or content length");
         return -1;
     }
+
+    // Store the file persistently
+    ERR_CHECK(svc_write_file(command->slot, &curr_file, command->uuid));  // lands in secure_write_file
 
     // Success message with an empty body
     write_packet(CONTROL_INTERFACE, WRITE_MSG, NULL, 0);
@@ -172,43 +194,55 @@ int write(uint16_t pkt_len, uint8_t *buf) {
 int receive(uint16_t pkt_len, uint8_t *buf) {
     receive_command_t *command = (receive_command_t *)buf;
     receive_request_t request;
-    receive_response_t recv_resp;
+    receive_response_enc_t *recv_resp;  // file will come encrypted here
     msg_type_t cmd;
-    uint16_t len_recv_msg;
-    int ret;
+    uint16_t len_recv_msg = 0;   
+    
+    int ret = -1;
 
-    if (!check_pin(command->pin)) {
-        print_error("Invalid pin");
-        return -1;
-    }
+    uint16_t write_slot = command->write_slot;
+    uint8_t nonce[NONCE_SIZE];
+    
+    // Pin check
+    ERR_CHECK(svc_check_pin(RECEIVE_MSG, command->pin)); // lands in secure_check_pin  
 
-    // zeroize the buffers we will use
-    memset(&recv_resp, 0, sizeof(recv_resp));
+    // Zeroize the buffers we will use
     memset(&request, 0, sizeof(request));
 
-    // prep request to neighbor
+    // Prep request to neighbor (slot number, local permission strucuture with signature), nonce
     request.slot = command->read_slot;
-    memcpy(&request.permissions, &global_permissions, sizeof(group_permission_t) * MAX_PERMS);
-
-    // request the file from the neighboring device
+    memcpy(request.permissions, (void *)global_permissions_u, sizeof(group_permission_t) * MAX_PERMS);
+    memcpy(request.permissions_sig, global_permissions_sig, HMAC_SIZE);
+    ERR_CHECK(svc_get_random_bytes(request.nonce, NONCE_SIZE));  // create a nonce
+    memcpy(nonce, request.nonce, NONCE_SIZE);
+    
+    
+    // Request the file from the neighboring device
     write_packet(TRANSFER_INTERFACE, RECEIVE_MSG, (void *)&request, sizeof(receive_request_t));
 
-    // set essentially no limit to the receive message size
-    len_recv_msg = 0xffff;
 
-    // recieve the response message
-    read_packet(TRANSFER_INTERFACE, &cmd, &recv_resp, &len_recv_msg);
-    if (cmd != RECEIVE_MSG) {
+    // Recieve the response message
+    memset(uart_buf, 0x0, sizeof(uart_buf));
+    len_recv_msg = sizeof(uart_buf); // response must fit in uart buf
+    recv_resp = (receive_response_enc_t *)uart_buf;
+    if (read_packet(TRANSFER_INTERFACE, &cmd, recv_resp, &len_recv_msg) != MSG_OK) {
+        print_error("Bad incoming data");
+        return -1;
+    }
+    if (cmd == ERROR_MSG) {
+        print_error((char *)recv_resp);
+        return -1;
+    }
+    else if (cmd != RECEIVE_MSG) {
         print_error("Opcode mismatch");
         return -1;
     }
 
-    // write that file into the file system
-    if (write_file(command->write_slot, &recv_resp.file, recv_resp.uuid) < 0) {
-        print_error("Writing received file failed");
-        return -1;
-    }
-    // empty success message
+    // Decrypt the encrypted contents and write
+    ERR_CHECK(svc_write_file_from_transfer(recv_resp, nonce, write_slot));  // lands in secure_write_file_from_transfer
+    
+    
+    // Empty success message
     write_packet(CONTROL_INTERFACE, RECEIVE_MSG, NULL, 0);
     return 0;
 }
@@ -223,101 +257,155 @@ int receive(uint16_t pkt_len, uint8_t *buf) {
  */
 int interrogate(uint16_t pkt_len, uint8_t *buf) {
     interrogate_command_t *command = (interrogate_command_t*)buf;
+    uint8_t nonce[NONCE_SIZE];
+    
     msg_type_t cmd;
-    list_response_t final_list_buf;
-    uint16_t len_recv_msg;
+    list_response_enc_t final_list_buf; // response will come encrypted here
+    
+    uint16_t len_recv_msg = 0;
 
-    // pin check
-    if (!check_pin(command->pin)) {
-        print_error("Invalid pin");
+    // Pin check
+    ERR_CHECK(svc_check_pin(INTERROGATE_MSG, command->pin)); // lands in secure_check_pin  
+
+    // Create a nonce
+    ERR_CHECK(svc_get_random_bytes(nonce, NONCE_SIZE)); 
+    
+    // Send the nonce and request the file list from the neighboring device
+    write_packet(TRANSFER_INTERFACE, INTERROGATE_MSG, nonce, NONCE_SIZE);
+    
+     
+    // Recieve the response message
+    len_recv_msg = sizeof(uart_buf); // response must fit in uart buf
+    memset(&final_list_buf, 0x0, sizeof(list_response_enc_t));
+    if (read_packet(TRANSFER_INTERFACE, &cmd, &final_list_buf, &len_recv_msg) != MSG_OK) {
+        print_error("Bad incoming data");
         return -1;
     }
-
-    // request the file list from the neighboring device
-    write_packet(TRANSFER_INTERFACE, INTERROGATE_MSG, NULL, 0);
-
-    // set essentially no limit to the receive message size
-    len_recv_msg = 0xffff;
-
-    // recieve the response message
-    read_packet(TRANSFER_INTERFACE, &cmd, &final_list_buf, &len_recv_msg);
-    if (cmd != INTERROGATE_MSG) {
+    if (cmd == ERROR_MSG) {
+        print_error((char *)&final_list_buf);
+        return -1;
+    }
+    else if (cmd != INTERROGATE_MSG) {
         print_error("Opcode mismatch");
         return -1;
     }
 
-    // return the final list to the user
-    write_packet(CONTROL_INTERFACE, INTERROGATE_MSG, &final_list_buf, len_recv_msg);
+    // Decrypt the encrypted contents and filter 
+    ERR_CHECK(svc_filter_file_meta(&final_list_buf, nonce));  // lands in secure_filter_file_meta
+    
+    // Return the final list to the user (final_list_buf.data is now decrypted)
+    pkt_len_t write_length = LIST_PKT_LEN(final_list_buf.data.n_files);
+    write_packet(CONTROL_INTERFACE, INTERROGATE_MSG, &(final_list_buf.data), write_length);
+    
     return 0;
 }
 
 
 /** @brief Perform the listen operation
  *
+ *  @param pkt_len The length of the incoming packet
+ *  @param buf A pointer the incoming message buffer
+ *
  * @return 0 upon success. A negative value on error.
 */
 int listen(uint16_t pkt_len, uint8_t *buf) {
-    uint8_t uart_buf[sizeof(receive_request_t)];
-    msg_type_t cmd;
-    pkt_len_t write_length, read_length;
-    list_response_t file_list;
-    receive_request_t *command;
-    receive_response_t recv_resp;
-    const filesystem_entry_t *metadata;
+    msg_type_t cmd;    
+    pkt_len_t read_length;    
+    
+    
+    // Pin check not needed for listen but we must call it to register capability
+    ERR_CHECK(svc_check_pin(LISTEN_MSG, NULL)); // lands in secure_check_pin  
 
-    read_length = sizeof(uart_buf);
-
+    print_debug("Listening...");
+        
     // Receive a packet from a neighboring hsm
+    read_length = sizeof(uart_buf); // request must fit in uart buf
     memset(uart_buf, 0, sizeof(uart_buf));
-    read_packet(TRANSFER_INTERFACE, &cmd, uart_buf, &read_length);
+    if (read_packet(TRANSFER_INTERFACE, &cmd, uart_buf, &read_length) != MSG_OK) {
+        print_error("Bad incoming data");
+        return -1;
+    }
 
+    // Process command from neighbor
     switch (cmd) {
         case INTERROGATE_MSG:
-            // zeroize the buffers we will use
-            memset(&file_list, 0, sizeof(file_list));
-
-            // generate a list of files for the other device
-            generate_list_files(&file_list);
-
-            // TODO: the reference design does not implement *ANY* security
-            // you will want to add something here to comply with SR1
-
-            // send the list of files on this device
-            write_length = LIST_PKT_LEN(file_list.n_files);
-            write_packet(TRANSFER_INTERFACE, INTERROGATE_MSG, &file_list, write_length);
+            if (listen_interrogate(uart_buf) < 0) {
+                char msg[] = "Remote HSM failed with an error\0";
+                write_packet(TRANSFER_INTERFACE, ERROR_MSG, msg, strlen(msg)+1);
+                return -1;
+            }
             break;
         case RECEIVE_MSG:
-            // get the request
-            command = (receive_request_t *)uart_buf;
-
-            // TODO: the reference design does not implement *ANY* security
-            // you will want to add something here to comply with SR1
-
-            // if this read fails, the other device will not receive a response and
-            // may need to be reset before further testing can occur
-            if (read_file(command->slot, &recv_resp.file) < 0) {
-                print_error("Failed to read file");
+            if (listen_receive(uart_buf) < 0) {
+                char msg[] = "Remote HSM failed with an error\0";
+                write_packet(TRANSFER_INTERFACE, ERROR_MSG, msg, strlen(msg)+1);
                 return -1;
             }
-
-            metadata = get_file_metadata(command->slot);
-            if (metadata == NULL) {
-                print_error("Getting metadata failed");
-                return -1;
-            }
-
-            memcpy(&recv_resp.uuid, &metadata->uuid, UUID_SIZE);
-
-            // send the file to the neighbor hsm
-            write_length = sizeof(receive_response_t);
-            write_packet(TRANSFER_INTERFACE, RECEIVE_MSG, &recv_resp, write_length);
             break;
         default:
             print_error("Bad message type");
             return -1;
     }
 
-    // blank success message
+    // Blank success message
     write_packet(CONTROL_INTERFACE, LISTEN_MSG, NULL, 0);
+    return 0;
+}
+
+/** @brief Perform the interogate operation during listen
+ *
+ *  @param buf A pointer the incoming message buffer
+ *
+ * @return 0 upon success. A negative value on error.
+*/
+int listen_interrogate(uint8_t *buff) {
+    list_response_enc_t file_list_enc;
+    pkt_len_t write_length;
+    
+    // Zeroize the buffers we will use
+    memset(&file_list_enc, 0, sizeof(file_list_enc));
+
+    // Generate encrypted list of files for the other device
+    // If this read fails, the other device will not receive a response and
+    // may need to be reset before further testing can occur
+    memcpy(file_list_enc.nonce, buff, NONCE_SIZE);  // other device sends nonce in interrogate command
+    ERR_CHECK(svc_read_file_meta_for_transfer(&file_list_enc));  // lands in secure_read_file_meta_for_transfer
+
+
+    // Send the list of files on this device in encrypted form
+    write_length = file_list_enc.data_len + offsetof(list_response_enc_t, data);
+    write_packet(TRANSFER_INTERFACE, INTERROGATE_MSG, &file_list_enc, write_length);
+    
+    return 0;
+}
+
+/** @brief Perform the receive operation during listen
+ *
+ *  @param buf A pointer the incoming message buffer
+ *
+ * @return 0 upon success. A negative value on error.
+*/
+int listen_receive(uint8_t *buff) {
+    pkt_len_t write_length;
+    receive_request_t command;
+    receive_response_enc_t *recv_resp_enc;
+
+    
+    // Get the request
+    memcpy(&command, buff, sizeof(receive_request_t));
+
+    // Zeroize the buffers we will use
+    memset(uart_buf, 0x0, sizeof(uart_buf));
+    recv_resp_enc = (receive_response_enc_t *)uart_buf;
+    
+    // Generate encrypted response for the other device
+    // If this read fails, the other device will not receive a response and
+    // may need to be reset before further testing can occur
+    ERR_CHECK(svc_read_file_for_transfer(&command, recv_resp_enc));  // lands in secure_read_file_for_transfer
+
+    // Send the file to the neighbor hsm in encrypted form
+    write_length = recv_resp_enc->data_len + offsetof(receive_response_enc_t, data);
+    write_packet(TRANSFER_INTERFACE, RECEIVE_MSG, recv_resp_enc, write_length);
+    
     return 0;
 }

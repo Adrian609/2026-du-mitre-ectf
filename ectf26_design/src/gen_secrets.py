@@ -12,10 +12,9 @@ Copyright: Copyright (c) 2026 The MITRE Corporation
 
 import argparse
 import json
+import time
 from pathlib import Path
-
-from loguru import logger
-
+from secrets import token_hex
 
 def gen_secrets(groups: list[int]) -> bytes:
     """Generate the contents secrets file
@@ -32,15 +31,16 @@ def gen_secrets(groups: list[int]) -> bytes:
 
     :returns: Contents of the secrets file
     """
-    # TODO: Update this function to generate any system-wide secrets needed by
-    #   your design
-
     # Create the secrets object
     # You can change this to generate any secret material
     # The secrets file will never be shared with attackers
+
+    # Generate shared AES key
+    aes_128_shared = token_hex(16)
+
     secrets = {
         "groups": groups,
-        "some_secrets": "EXAMPLE",
+        "aes_128_shared": aes_128_shared 
     }
 
     # NOTE: if you choose to use JSON for your file type, you will not
@@ -88,7 +88,8 @@ def main():
     # Attackers will NOT have access to the output of this, but feel free to remove
     #
     # NOTE: Printing sensitive data is generally not good security practice
-    logger.debug(f"Generated secrets: {secrets}")
+
+    # print(f"Generated secrets: {secrets}")
 
     # Open the file, erroring if the file exists unless the --force arg is provided
     with open(args.secrets_file, "wb" if args.force else "xb") as f:
@@ -96,7 +97,7 @@ def main():
         f.write(secrets)
 
     # For your own debugging. Feel free to remove
-    logger.success(f"Wrote secrets to {str(args.secrets_file.absolute())}")
+    # print(f"Wrote secrets to {str(args.secrets_file.absolute())}")
 
 
 if __name__ == "__main__":

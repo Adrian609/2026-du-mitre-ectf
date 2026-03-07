@@ -21,6 +21,8 @@
 #include <ti/driverlib/driverlib.h>
 #include <ti/driverlib/m0p/dl_core.h>
 
+#include "kernel.h"
+
 #define FLASH_PAGE_SIZE DL_FLASHCTL_SECTOR_SIZE /* 1024 */
 
 /**
@@ -35,7 +37,7 @@
  * Once erased, memory can only be written one way e.g. 1->0.
  * In order to be re-written the entire page must be erased.
 */
-int flash_simple_erase_page(uint32_t address);
+KERNEL_CODE int flash_simple_erase_page(uint32_t address);
 /**
  * @brief Flash Simple Read
  *
@@ -46,7 +48,7 @@ int flash_simple_erase_page(uint32_t address);
  * This function reads data from the specified flash page into the buffer
  * with the specified amount of bytes
 */
-void flash_simple_read(uint32_t address, void* buffer, uint32_t size);
+KERNEL_CODE  void flash_simple_read(uint32_t address, void* buffer, uint32_t size);
 /**
  * @brief Flash Simple Write
  *
@@ -61,6 +63,6 @@ void flash_simple_read(uint32_t address, void* buffer, uint32_t size);
  * way e.g. 1->0. To rewrite previously written memory see the
  * flash_simple_erase_page documentation.
 */
-int flash_simple_write(uint32_t address, void* buffer, uint32_t size);
+KERNEL_CODE  int flash_simple_write(uint32_t address, void* buffer, uint32_t size);
 
 #endif

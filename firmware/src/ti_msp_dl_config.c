@@ -50,9 +50,26 @@ SYSCONFIG_WEAK void SYSCFG_DL_init(void)
     SYSCFG_DL_GPIO_init();
     /* Module-Specific Initializations*/
     SYSCFG_DL_SYSCTL_init();
+    SYSCFG_DL_TRNG_init();
     SYSCFG_DL_UART_0_init();
     SYSCFG_DL_UART_1_init();
 }
+
+SYSCONFIG_WEAK void SYSCFG_DL_TRNG_init(void) {
+
+    DL_TRNG_reset(TRNG);
+    DL_TRNG_enablePower(TRNG);
+
+    DL_TRNG_setClockDivider(TRNG, DL_TRNG_CLOCK_DIVIDE_2);
+
+    DL_TRNG_sendCommand(TRNG, DL_TRNG_CMD_NORM_FUNC);
+    while (!DL_TRNG_isCommandDone(TRNG));
+    DL_TRNG_clearInterruptStatus(TRNG, DL_TRNG_INTERRUPT_CMD_DONE_EVENT);
+
+    DL_TRNG_setDecimationRate(TRNG, DL_TRNG_DECIMATION_RATE_4);
+    
+}
+
 
 SYSCONFIG_WEAK void SYSCFG_DL_initPower(void)
 {
