@@ -61,6 +61,9 @@
 !.github/workflows/docker-build.yml
 !.github/workflows/docker-push.yml
 !.github/workflows/docker-hub-push.yml
+!.github/workflows/python-lint.yml
+!.github/workflows/python-tests.yml
+!.github/workflows/python-secrets.yml
 !.github/workflows/README.md
 !docs/
 !docs/security_c_manual_test_plan.md
