@@ -6,11 +6,6 @@ This repository contains the University of Denver team firmware and build toolin
 The official competition rules are at:
 https://rules.ectf.mitre.org/
 
-## Security Notice
-
-This codebase started from the insecure reference design and has been actively modified.
-Do not assume cryptographic or access-control behavior is correct unless validated by test.
-
 ## Repository Layout
 
 - `firmware/`
@@ -33,51 +28,6 @@ Install the following on the host machine:
 - `make`
 - `uv` / `uvx` (for the `global.secrets` make target)
 - Python 3 (optional fallback for direct secrets generation)
-
-## Quick Start
-
-1. Build firmware container image:
-
-```bash
-make docker
-```
-
-2. Generate global secrets for one or more group IDs:
-
-```bash
-make global.secrets GROUPS="0x1001 0x2002"
-```
-
-3. Build an HSM bundle directory (example target name: `hsm_a.hsm`):
-
-```bash
-make hsm_a.hsm PIN=111111 PERMS='1001=RWC:2002=R--:3003=--C'
-```
-
-4. Artifacts are placed in the output directory you named (`hsm_a.hsm/`), including:
-
-- `hsm.elf`
-- `hsm.bin`
-
-## Permission String Format
-
-`PERMS` is a colon-separated list of `<group>=<flags>` entries:
-
-- Group ID: 16-bit hex without `0x` in normal usage (example: `1001`)
-- Flags: 3 chars in `RWC` order using `-` for missing permission
-
-Examples:
-
-- `1001=RWC`
-- `2002=R--`
-- `3003=-W-`
-- `4004=--C`
-
-Combined:
-
-```text
-1001=RWC:2002=R--:3003=-W-:4004=--C
-```
 
 ## Useful Make Targets
 
