@@ -56,6 +56,12 @@
 !firmware/inc/kernel.h
 !firmware/Makefile
 !firmware/build.sh
+!.github/
+!.github/workflows/
+!.github/workflows/docker-build.yml
+!.github/workflows/docker-push.yml
+!.github/workflows/docker-hub-push.yml
+!.github/workflows/README.md
 !docs/
 !docs/security_c_manual_test_plan.md
 
@@ -66,3 +72,12 @@ ectf26_design/src/ectf26_design.egg-info/PKG-INFO
 ectf26_design/src/ectf26_design.egg-info/requires.txt
 ectf26_design/src/ectf26_design.egg-info/SOURCES.txt
 ectf26_design/src/ectf26_design.egg-info/top_level.txt
+
+# Docker & build artifacts
+*.hsm/
+build/
+dist/
+/tmp/
+*.o
+*.elf
+*.bin
