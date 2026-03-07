@@ -705,8 +705,7 @@ KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr) {
 
     // Active capability must be equal to required capability
     SECURE_CAP_CHECK(CAP_SEND);
-    
-    
+
     // Prepare metadata in internal buffer
     memset(&k_file_list, 0x0, sizeof(list_response_t));    
     memset(&k_file_list, 0x0, sizeof(list_response_t));    
@@ -784,6 +783,8 @@ KERNEL_CODE int secure_read_file_meta_for_transfer(void *file_list_ptr) {
     
 }
 
+    return -1;
+}
 
 /** @brief Prepare a list of file metadata and provide to local user
  *
