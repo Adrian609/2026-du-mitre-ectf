@@ -158,3 +158,253 @@ Test campaign is complete when:
 3. Local crypto/read-write tests (`SEC-020` to `SEC-028`)
 4. Transfer/interrogate tests (`SEC-030` to `SEC-049`)
 5. Robustness and stress tests (`SEC-060` to `SEC-066`)
+
+
+```
+Test Data Dump
+
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ uvx ectf tools /dev/ttyACM2 write abc123 0 0x1111 README.md 
+Write successful
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 write abc123 0 0x1111 README.md
+Write successful
+
+real    0.75s
+user    0.33s
+sys     0.05s
+cpu     51%
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ dd if=/dev/random of=randomfile.bin bs=1 n=8192 
+dd: unrecognized operand 'n=8192'
+Try 'dd --help' for more information.
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ dd if=/dev/random of=randomfile.bin bs=1 count=8192 
+8192+0 records in
+8192+0 records out
+8192 bytes (8.2 kB, 8.0 KiB) copied, 0.0322007 s, 254 kB/s
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ ls    
+build  ectf26_design  global.secrets  LICENSE.txt  randomfile.bin  renode
+docs   firmware       insecure.out    Makefile     README.md
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 write abc123 0 0x1111 randomfile.bin 
+Write successful
+
+real    2.00s
+user    0.36s
+sys     0.04s
+cpu     19%
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ dd if=/dev/random of=randomfile.bin bs=1 count=8193                  
+8193+0 records in
+8193+0 records out
+8193 bytes (8.2 kB, 8.0 KiB) copied, 0.0332416 s, 246 kB/s
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 write abc123 0 0x1111 randomfile.bin
+HSM failed with error: Message(opcode=<Opcode.ERROR: 69>, body=b'Illegal name or content length')
+
+real    1.18s
+user    0.33s
+sys     0.07s
+cpu     33%
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 write abc124 0 0x1111 randomfile.bin
+HSM failed with error: Message(opcode=<Opcode.ERROR: 69>, body=b'Invalid PIN')
+
+real    5.14s
+user    0.35s
+sys     0.04s
+cpu     7%
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 write abc123 0 0x1111 README.md     
+Write successful
+
+real    0.79s
+user    0.34s
+sys     0.05s
+cpu     49%
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 read                           
+Usage: ectf tools PORT read [OPTIONS] PIN SLOT READ_FILE_PATH
+Try 'ectf tools PORT read --help' for help.
+╭─ Error ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Missing argument 'PIN'.                                                                                            │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+real    0.42s
+user    0.38s
+sys     0.05s
+cpu     101%
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 read abc123 0 dump/
+╭──────────────────────────────────────── Traceback (most recent call last) ─────────────────────────────────────────╮
+│ /home/du-student/.cache/uv/archive-v0/RoC6Q-NM_FOehK1VPvFMA/lib/python3.12/site-packages/ectf/tools/cli.py:101 in  │
+│ read                                                                                                               │
+│                                                                                                                    │
+│    98 │                                                                                                            │
+│    99 │   # Write the results to a file                                                                            │
+│   100 │   full_path = read_file_path / name.decode("utf-8")                                                        │
+│ ❱ 101 │   with Path.open(full_path, "wb" if force else "xb") as f:                                                 │
+│   102 │   │   f.write(contents)                                                                                    │
+│   103 │                                                                                                            │
+│   104 │   success(f"Read successful. Wrote file to {full_path.absolute()!s}")                                      │
+│                                                                                                                    │
+│ /home/du-student/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/pathlib.py:1013 in open    │
+│                                                                                                                    │
+│   1010 │   │   """                                                                                                 │
+│   1011 │   │   if "b" not in mode:                                                                                 │
+│   1012 │   │   │   encoding = io.text_encoding(encoding)                                                           │
+│ ❱ 1013 │   │   return io.open(self, mode, buffering, encoding, errors, newline)                                    │
+│   1014 │                                                                                                           │
+│   1015 │   def read_bytes(self):                                                                                   │
+│   1016 │   │   """                                                                                                 │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+FileNotFoundError: [Errno 2] No such file or directory: 'dump/README.md'
+
+real    0.77s
+user    0.48s
+sys     0.04s
+cpu     68%
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ mkdir dump           
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 read abc123 0 dump/
+Read successful. Wrote file to /home/du-student/Documents/2026-du-mitre-ectf/dump/README.md
+
+real    0.84s
+user    0.53s
+sys     0.08s
+cpu     72%
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ diff dump/README.md README.md 
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ dd if=/dev/random of=randomfile.bin bs=1 count=8192                  
+8192+0 records in
+8192+0 records out
+8192 bytes (8.2 kB, 8.0 KiB) copied, 0.0332666 s, 246 kB/s
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 write abc123 1 0x1111 randomfile.bin
+Write successful
+
+real    2.00s
+user    0.34s
+sys     0.05s
+cpu     19%
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 list abc123                         
+Found file: Slot 0, Group 1111, README.md
+Found file: Slot 1, Group 1111, randomfile.bin
+List successful
+
+real    0.49s
+user    0.34s
+sys     0.05s
+cpu     81%
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 read abc123 1 dump/                 
+Read successful. Wrote file to /home/du-student/Documents/2026-du-mitre-ectf/dump/randomfile.bin
+
+real    1.85s
+user    0.36s
+sys     0.07s
+cpu     23%
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ diff dump/randomfile.bin randomfile.bin             
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ dd if=/dev/random of=randomfile.bin bs=1 count=8192                  
+8192+0 records in
+8192+0 records out
+8192 bytes (8.2 kB, 8.0 KiB) copied, 0.0396318 s, 207 kB/s
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 write abc123 1 0x1111 randomfile.bin
+Write successful
+
+real    2.01s
+user    0.35s
+sys     0.04s
+cpu     19%
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 write abc123 1 0x1111 randomfile.bin
+Write successful
+
+real    2.03s
+user    0.34s
+sys     0.06s
+cpu     19%
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 read abc123 1 dump/      
+╭──────────────────────────────────────── Traceback (most recent call last) ─────────────────────────────────────────╮
+│ /home/du-student/.cache/uv/archive-v0/RoC6Q-NM_FOehK1VPvFMA/lib/python3.12/site-packages/ectf/tools/cli.py:101 in  │
+│ read                                                                                                               │
+│                                                                                                                    │
+│    98 │                                                                                                            │
+│    99 │   # Write the results to a file                                                                            │
+│   100 │   full_path = read_file_path / name.decode("utf-8")                                                        │
+│ ❱ 101 │   with Path.open(full_path, "wb" if force else "xb") as f:                                                 │
+│   102 │   │   f.write(contents)                                                                                    │
+│   103 │                                                                                                            │
+│   104 │   success(f"Read successful. Wrote file to {full_path.absolute()!s}")                                      │
+│                                                                                                                    │
+│ /home/du-student/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/pathlib.py:1013 in open    │
+│                                                                                                                    │
+│   1010 │   │   """                                                                                                 │
+│   1011 │   │   if "b" not in mode:                                                                                 │
+│   1012 │   │   │   encoding = io.text_encoding(encoding)                                                           │
+│ ❱ 1013 │   │   return io.open(self, mode, buffering, encoding, errors, newline)                                    │
+│   1014 │                                                                                                           │
+│   1015 │   def read_bytes(self):                                                                                   │
+│   1016 │   │   """                                                                                                 │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+FileExistsError: [Errno 17] File exists: 'dump/randomfile.bin'
+
+real    1.98s
+user    0.49s
+sys     0.06s
+cpu     27%
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ rm dump/*            
+zsh: sure you want to delete all 2 files in /home/du-student/Documents/2026-du-mitre-ectf/dump [yn]? y
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 read abc123 1 dump/
+Read successful. Wrote file to /home/du-student/Documents/2026-du-mitre-ectf/dump/randomfile.bin
+
+real    1.83s
+user    0.36s
+sys     0.06s
+cpu     22%
+                                                                                                                      
+┌──(du-student㉿DU-kali)-[~/Documents/2026-du-mitre-ectf]
+└─$ time uvx ectf tools /dev/ttyACM2 read abc123 0 dump/
+Read successful. Wrote file to /home/du-student/Documents/2026-du-mitre-ectf/dump/README.md
+
+real    0.64s
+user    0.35s
+sys     0.05s
+cpu     62%
+```
