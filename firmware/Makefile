@@ -1,0 +1,129 @@
+MSPM0_SDK_INSTALL_DIR ?= $(abspath ../../../../../..)
+
+include $(MSPM0_SDK_INSTALL_DIR)/tools/imports_mak/imports.mak.linux
+
+CC = "$(TICLANG_ARMCOMPILER)/bin/tiarmclang"
+LNK = "$(TICLANG_ARMCOMPILER)/bin/tiarmclang"
+OBJCOPY = "$(TICLANG_ARMCOMPILER)/bin/tiarmobjcopy"
+BUILDDIR ?= /tmp/build
+VPATH = "src"
+LINKERFILE = "firmware_mod.ld"
+
+# to download wolfssl for the simple crypto example, `cd ./firmware/ && git clone https://github.com/wolfSSL/wolfssl`
+# then set this variable to 1
+CRYPTO_EXAMPLE = 1
+
+# TODO: set to 1 when compiling for board, to 0 for Renode
+ON_BOARD = 1
+
+OBJECTS = $(BUILDDIR)/HSM.so \
+    $(BUILDDIR)/simple_uart.so \
+    $(BUILDDIR)/ti_msp_dl_config.so \
+    $(BUILDDIR)/startup_mspm0l222x_ticlang.so \
+    $(BUILDDIR)/simple_flash.so \
+    $(BUILDDIR)/host_messaging.so \
+    $(BUILDDIR)/security.so \
+    $(BUILDDIR)/filesystem.so \
+    $(BUILDDIR)/commands.so \
+	$(BUILDDIR)/syscalls.so \
+	$(BUILDDIR)/kernel.so \
+	$(BUILDDIR)/simple_random.so
+
+ifeq ($(CRYPTO_EXAMPLE), 1)
+#OBJECTS += $(BUILDDIR)/simple_crypto.so
+
+# change C flags
+CFLAGS += -DCRYPTO_EXAMPLE=1
+CFLAGS += -DNO_WOLFSSL_DIR
+#CFLAGS += -DWOLFSSL_AES_DIRECT
+CFLAGS += -DSINGLE_THREADED
+# From https://www.wolfssl.com/documentation/manuals/wolfssl/chapter02.html#building-with-gcc-arm
+CFLAGS += -DHAVE_PK_CALLBACKS
+CFLAGS += -DWOLFSSL_USER_IO
+CFLAGS += -DNO_WRITEV -DTIME_T_NOT_64BIT
+CFLAGS += -DNO_FILESYSTEM
+# tells wolfssl that we will handle RNG on the baremetal target
+# user will need to implement the callbacks
+CFLAGS += -DNO_DEV_RANDOM
+CFLAGS += -DWC_NO_DEFAULT_DEVID
+CFLAGS += -DWOLF_CRYPTO_CB
+# enable streaming GCM API with no malloc and static memory
+CFLAGS += -DHAVE_AESGCM
+CFLAGS += -DWOLFSSL_AESGCM_STREAM
+CFLAGS += -DHAVE_AESGCM_DECRYPT
+CFLAGS += -UGCM_SMALL
+CFLAGS += -UGCM_TABLE_4BIT
+CFLAGS += -DWOLFSSL_NO_MALLOC
+CFLAGS += -DWOLFSSL_SP_ARM_THUMB_ASM
+CFLAGS += -DWOLFSSL_STATIC_MEMORY
+CFLAGS += -UNO_SHA256
+
+CFLAGS += -DWOLFSSL_USER_SETTINGS
+
+WOLFSSL_INC = /opt/wolfssl/wolfcrypt/src
+CFLAGS += -I/opt/wolfssl
+
+# we need to build these objects for the simple crypto example 
+OBJECTS += $(BUILDDIR)/aes.o $(BUILDDIR)/hash.o  $(BUILDDIR)/memory.o 
+OBJECTS += $(BUILDDIR)/cryptocb.o $(BUILDDIR)/misc.o
+OBJECTS += $(BUILDDIR)/sha256.o $(BUILDDIR)/sha.o $(BUILDDIR)/hmac.o 
+endif
+
+NAME = hsm
+
+CFLAGS += -DON_BOARD=$(ON_BOARD)
+
+CFLAGS += -I.. \
+    -D__MSPM0L2228__ \
+    -O2 \
+    "-I$(MSPM0_SDK_INSTALL_DIR)/source/third_party/CMSIS/Core/Include" \
+    "-I$(MSPM0_SDK_INSTALL_DIR)/source" \
+	"-I./inc" \
+    -gdwarf-3 \
+    -mcpu=cortex-m0plus \
+    -march=thumbv6m \
+    -mfloat-abi=soft \
+    -mthumb 
+
+LFLAGS += "-l$(MSPM0_SDK_INSTALL_DIR)/source/ti/drivers/lib/ticlang/m0p/drivers_mspm0l122x_l222x.a" \
+    "-l$(MSPM0_SDK_INSTALL_DIR)/kernel/nortos/lib/ticlang/m0p/nortos_mspm0l122x_l222x.a" \
+    "-l$(MSPM0_SDK_INSTALL_DIR)/source/ti/driverlib/lib/ticlang/m0p/mspm0l122x_l222x/driverlib.a" \
+    "-L$(MSPM0_SDK_INSTALL_DIR)/source" \
+    -L.. \
+    ./$(LINKERFILE) \
+    "-Wl,-m,$(BUILDDIR)/$(NAME).map" \
+    -Wl,--rom_model \
+    -Wl,--warn_sections \
+    "-L$(TICLANG_ARMCOMPILER)/lib" \
+    -llibc.a 
+
+
+
+all: $(BUILDDIR)/$(NAME).elf $(BUILDDIR)/$(NAME).bin
+
+$(BUILDDIR):
+	@ mkdir -p $(BUILDDIR)
+
+$(BUILDDIR)/%.so: ./src/%.c | $(BUILDDIR)
+	@ echo Building $@
+	@ $(CC) $(CFLAGS) -c $< -o $@
+
+# if compiling with the crypto example, compile all crypto objects
+ifeq ($(CRYPTO_EXAMPLE), 1)
+$(BUILDDIR)/%.o: $(WOLFSSL_INC)/%.c 
+	@ echo Building $@
+	@ $(CC) $(CFLAGS) -c $< -o $@
+endif
+
+$(BUILDDIR)/$(NAME).elf: $(OBJECTS)
+	@ echo linking $@
+	@ $(LNK) -Wl,-u,_c_int00 $(OBJECTS)  $(LFLAGS) -o $(BUILDDIR)/$(NAME).elf
+
+$(BUILDDIR)/$(NAME).bin: $(BUILDDIR)/$(NAME).elf
+	@ $(OBJCOPY) -O binary --gap-fill 0xff $(BUILDDIR)/$(NAME).elf $(BUILDDIR)/$(NAME).bin
+
+clean:
+	@ echo Cleaning...
+	@ $(RM) $(OBJECTS) > $(DEVNULL) 2>&1
+	@ $(RM) $(NAME).elf > $(DEVNULL) 2>&1
+	@ $(RM) $(NAME).map > $(DEVNULL) 2>&1
