@@ -1206,7 +1206,9 @@ KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req
 
     // Stage key and decrypted file header before removing sender's local encryption
     memcpy(key, p_dec, AESGCM_KEY_SIZE);
+    memcpy((void *)(&(response->data.file_enc)), p_dec + AESGCM_KEY_SIZE + UUID_SIZE, sizeof(file_header_t));   
     
+    // Remove sender's local encryption
     ret = erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
     if (ret != 0)
     {
@@ -1214,24 +1216,13 @@ KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req
         goto cleanup;
     }
     
-    file_header_t *f_header = (file_header_t *)(p_dec + AESGCM_KEY_SIZE + UUID_SIZE);
+    file_header_t *f_header = (file_header_t *)(&(response->data.file_enc));
     
-    ret = flash_simple_write((uint32_t)&k_curr_file, 
-                             (void *)f_header, 
-                             sizeof(file_header_t)); // put back decrypted file header
-    if (ret != 0)
-    {
-        ret = INTERNAL_ERR;
-        goto cleanup;
-    }
-    
-    
-    // Remove sender's local encryption
-    ret = copy_with_transform((uint8_t *)(&(response->data.file_enc)) + sizeof(file_header_t), 
-                          (uint8_t *)&k_curr_file + sizeof(file_header_t),
+    ret = copy_with_transform((uint8_t *)(&(response->data.file_enc)), 
+                          (uint8_t *)&k_curr_file,
                           (uint8_t *)key, XFORM_DEC,
                           (uint8_t *)f_header->aes_gcm_tag, (uint8_t *)f_header->aes_gcm_iv,
-                          response->data_len - UUID_SIZE - sizeof(file_header_t), 0,
+                          response->data_len - UUID_SIZE, sizeof(file_header_t),
                           true);
      
     if (ret != 0) goto cleanup;
