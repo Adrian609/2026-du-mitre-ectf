@@ -1208,7 +1208,7 @@ KERNEL_CODE int secure_write_file_from_transfer(void *response_ptr, uint8_t *req
     memcpy(key, p_dec, AESGCM_KEY_SIZE);
     memcpy((void *)(&(response->data.file_enc)), p_dec + AESGCM_KEY_SIZE + UUID_SIZE, sizeof(file_header_t));   
     
-    // Remove sender's local encryption
+    // Remove sender's local encryption using sent key
     ret = erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
     if (ret != 0)
     {
