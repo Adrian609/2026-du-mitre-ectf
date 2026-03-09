@@ -1025,7 +1025,7 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
         return READ_META_ERR;
     }
     SECURE_CAP_CHECK(CAP_SEND);
-    //SECURE_PERM_CHECK(f_header.group_id, C_PERMISSION, request->permissions);
+    SECURE_PERM_CHECK(f_header.group_id, C_PERMISSION, request->permissions);
 
 
     // Derive local_key for transfer
@@ -1096,13 +1096,24 @@ KERNEL_CODE int secure_read_file_for_transfer(void *request_ptr, void *response_
     if (ret != 0) goto cleanup;
 
 
-    // Set response fields 
-    ret = read_file(slot, (file_t *)(&(response->data.file_enc)));
-    if (ret != 0) {
+    // Read file into user buffer
+    ret = erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
+    if (ret != 0)
+    {
+        ret = INTERNAL_ERR;
+        goto cleanup;
+    }
+    
+    ret = read_file(slot, (file_t *)&k_curr_file);
+    if (ret != 0) 
+    {
         ret = READ_ERR;
         goto cleanup;
     }
     
+    memcpy((void *)(&(response->data.file_enc)), (void *)&k_curr_file, sizeof(file_t));
+    
+    // Set response fields
     memcpy((void *)(&(response->data.file_enc)), 
            (void *)(p_enc + AESGCM_KEY_SIZE + UUID_SIZE), 
            sizeof(file_header_t)); // encrypted file header
@@ -1127,7 +1138,8 @@ cleanup:
     memset(p_enc, 0, sizeof(p_enc));
     __asm__ volatile("" ::: "memory");
         
-
+    erase_scratchpad_pages((uint32_t)&k_curr_file, sizeof(file_t));
+    
     return ret;
 }
 
