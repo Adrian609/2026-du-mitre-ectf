@@ -9,6 +9,7 @@
 !LICENSE.txt
 !README.md
 !Makefile
+!Design_Document.pdf
 !ectf26_design
 !ectf26_design/src
 !ectf26_design/src/gen_secrets.py
